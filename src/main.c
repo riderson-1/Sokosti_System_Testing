@@ -206,17 +206,19 @@ static int32_t ads_decode24(const uint8_t *p)
  * 24 status bits + 24 bits per channel.
  * For 8 channels this is 27 bytes total [22], [23].
  */
-static int ads_read_frame_rdatac(uint8_t frame[ADS_FRAME_BYTES])
+static int ads_read_frame_rdata(uint8_t frame[ADS_FRAME_BYTES])
 {
-    uint8_t tx[ADS_FRAME_BYTES] = { 0 };
-    uint8_t rx[ADS_FRAME_BYTES] = { 0 };
+    uint8_t tx[1 + ADS_FRAME_BYTES] = { 0 };
+    uint8_t rx[1 + ADS_FRAME_BYTES] = { 0 };
+
+    tx[0] = CMD_RDATA;   /* command in first byte, not second */
 
     int ret = ads_spi_transceive_bytes(tx, rx, sizeof(tx));
     if (ret) {
         return ret;
     }
 
-    memcpy(frame, rx, ADS_FRAME_BYTES);
+    memcpy(frame, &rx[1], ADS_FRAME_BYTES);   /* data follows immediately after command byte */
     return 0;
 }
 
@@ -498,24 +500,15 @@ int main(void)
         return 0;
     }
 
-    /*
-     * Put device back into Read Data Continuous mode, then start conversions.
-     * RDATAC streams data after DRDY when START pin is high or START command
-     * has been sent [24].
-     */
-    ret = ads_send_cmd(CMD_RDATAC);
-    if (ret) {
-        printk("RDATAC failed: %d\n", ret);
-        return 0;
-    }
 
+    ads_send_cmd(CMD_SDATAC);
     k_sleep(K_MSEC(2));
 
-    ret = ads_send_cmd(CMD_START);
-    if (ret) {
-        printk("START command failed: %d\n", ret);
-        return 0;
-    }
+    ads_configure_internal_test_signal();
+
+    ads_send_cmd(CMD_START);
+    k_sleep(K_MSEC(20));
+
 
     printk("Streaming internal test signal. Expect ~1 Hz square wave.\n");
     printk("Polling DRDY and reading %d-byte frames.\n", ADS_FRAME_BYTES);
@@ -528,7 +521,7 @@ int main(void)
             continue;
         }
 
-        ret = ads_read_frame_rdatac(frame);
+        ret = ads_read_frame_rdata(frame);
         if (ret) {
             printk("Frame read failed: %d\n", ret);
             gpio_pin_toggle_dt(&led);
@@ -549,17 +542,17 @@ int main(void)
         int32_t ch7 = ads_decode24(&frame[21]);
         int32_t ch8 = ads_decode24(&frame[24]);
 
+        printk("sample=%lu status=%02X%02X%02X header=%s "
+               "ch1=%ld ch2=%ld ch3=%ld ch4=%ld "
+               "ch5=%ld ch6=%ld ch7=%ld ch8=%ld\n",
+               (unsigned long)sample_idx,
+               frame[0], frame[1], frame[2],
+               status_header_ok ? "OK" : "BAD",
+               (long)ch1, (long)ch2, (long)ch3, (long)ch4,
+               (long)ch5, (long)ch6, (long)ch7, (long)ch8);
+
         if ((sample_idx % 25U) == 0U) {
             gpio_pin_toggle_dt(&led);
-
-            printk("sample=%lu status=%02X%02X%02X header=%s "
-                   "ch1=%ld ch2=%ld ch3=%ld ch4=%ld "
-                   "ch5=%ld ch6=%ld ch7=%ld ch8=%ld\n",
-                   (unsigned long)sample_idx,
-                   frame[1], frame[2], frame[3],
-                   status_header_ok ? "OK" : "BAD",
-                   (long)ch1, (long)ch2, (long)ch3, (long)ch4,
-                   (long)ch5, (long)ch6, (long)ch7, (long)ch8);
         }
 
         sample_idx++;
