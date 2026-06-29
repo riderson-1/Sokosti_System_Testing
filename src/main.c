@@ -120,7 +120,7 @@ static int start_ads_pwm_clock(void)
         return -ENODEV;
     }
 
-    int ret = pwm_set_dt(&ads_clk_pwm, PWM_NSEC(488), PWM_NSEC(244));
+    int ret = pwm_set_dt(&ads_clk_pwm, PWM_NSEC(500), PWM_NSEC(250));;
     if (ret) {
         printk("PWM start failed: %d\n", ret);
         return ret;
