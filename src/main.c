@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <zephyr/usb/usb_device.h>
 
 #define CMD_WAKEUP   0x02
 #define CMD_STANDBY  0x04
