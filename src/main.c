@@ -68,6 +68,9 @@ static const struct gpio_dt_spec drdy_pin =
 static const struct pwm_dt_spec ads_clk_pwm =
     PWM_DT_SPEC_GET(ADS_CLK_NODE);
 
+static K_SEM_DEFINE(drdy_sem, 0, 1);
+static struct gpio_callback drdy_cb_data;
+
 static int ads_spi_write_bytes(const uint8_t *data, size_t len)
 {
     struct spi_buf txb = {
@@ -167,25 +170,22 @@ static int ads_write_regs(uint8_t start_reg, const uint8_t *values, size_t count
     return ret;
 }
 
-static int ads_wait_drdy_low_timeout_ms(int timeout_ms)
+static void drdy_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
-    int loops = timeout_ms * 10;
+    k_sem_give(&drdy_sem);
+}
 
-    for (int i = 0; i < loops; i++) {
-        int val = gpio_pin_get_dt(&drdy_pin);
-
-        if (val < 0) {
-            return val;
-        }
-
-        if (val == 0) {
-            return 0;
-        }
-
-        k_busy_wait(100);
+static int setup_drdy_interrupt(void)
+{
+    int ret = gpio_pin_interrupt_configure_dt(&drdy_pin, GPIO_INT_EDGE_FALLING);
+    if (ret) {
+        return ret;
     }
 
-    return -ETIMEDOUT;
+    gpio_init_callback(&drdy_cb_data, drdy_isr, BIT(drdy_pin.pin));
+    gpio_add_callback(drdy_pin.port, &drdy_cb_data);
+
+    return 0;
 }
 
 static int32_t ads_decode24(const uint8_t *p)
@@ -206,19 +206,17 @@ static int32_t ads_decode24(const uint8_t *p)
  * 24 status bits + 24 bits per channel.
  * For 8 channels this is 27 bytes total [22], [23].
  */
-static int ads_read_frame_rdata(uint8_t frame[ADS_FRAME_BYTES])
+static int ads_read_frame_rdatac(uint8_t frame[ADS_FRAME_BYTES])
 {
-    uint8_t tx[1 + ADS_FRAME_BYTES] = { 0 };
-    uint8_t rx[1 + ADS_FRAME_BYTES] = { 0 };
-
-    tx[0] = CMD_RDATA;   /* command in first byte, not second */
+    uint8_t tx[ADS_FRAME_BYTES] = { 0 };
+    uint8_t rx[ADS_FRAME_BYTES] = { 0 };
 
     int ret = ads_spi_transceive_bytes(tx, rx, sizeof(tx));
     if (ret) {
         return ret;
     }
 
-    memcpy(frame, &rx[1], ADS_FRAME_BYTES);   /* data follows immediately after command byte */
+    memcpy(frame, rx, ADS_FRAME_BYTES);
     return 0;
 }
 
@@ -450,6 +448,13 @@ int main(void)
         return 0;
     }
 
+    ret = setup_drdy_interrupt();
+    if (ret) {
+        printk("DRDY interrupt setup failed: %d\n", ret);
+        return 0;
+    }
+
+
     /*
      * Keep START pin low and use the SPI START command.
      * Datasheet says when using START command, hold START pin low [9], [27].
@@ -506,6 +511,9 @@ int main(void)
 
     ads_configure_internal_test_signal();
 
+    ads_send_cmd(CMD_RDATAC);
+    k_sleep(K_MSEC(2));
+
     ads_send_cmd(CMD_START);
     k_sleep(K_MSEC(20));
 
@@ -513,26 +521,17 @@ int main(void)
     printk("Streaming internal test signal. Expect ~1 Hz square wave.\n");
     printk("Polling DRDY and reading %d-byte frames.\n", ADS_FRAME_BYTES);
 
-    while (1) {
-        ret = ads_wait_drdy_low_timeout_ms(1000);
-        if (ret) {
-            printk("DRDY timeout/error: %d\n", ret);
-            gpio_pin_toggle_dt(&led);
-            continue;
-        }
+while (1) {
+        k_sem_take(&drdy_sem, K_FOREVER);
 
-        ret = ads_read_frame_rdata(frame);
+        ret = ads_read_frame_rdatac(frame);
         if (ret) {
             printk("Frame read failed: %d\n", ret);
             gpio_pin_toggle_dt(&led);
             continue;
         }
 
-        /*
-         * Status format begins with 1100 for ADS1299 data frames [22].
-         */
         bool status_header_ok = ((frame[0] & 0xF0) == 0xC0);
-
         int32_t ch1 = ads_decode24(&frame[3]);
         int32_t ch2 = ads_decode24(&frame[6]);
         int32_t ch3 = ads_decode24(&frame[9]);
@@ -542,21 +541,20 @@ int main(void)
         int32_t ch7 = ads_decode24(&frame[21]);
         int32_t ch8 = ads_decode24(&frame[24]);
 
-        printk("sample=%lu status=%02X%02X%02X header=%s "
-               "ch1=%ld ch2=%ld ch3=%ld ch4=%ld "
-               "ch5=%ld ch6=%ld ch7=%ld ch8=%ld\n",
-               (unsigned long)sample_idx,
-               frame[0], frame[1], frame[2],
-               status_header_ok ? "OK" : "BAD",
-               (long)ch1, (long)ch2, (long)ch3, (long)ch4,
-               (long)ch5, (long)ch6, (long)ch7, (long)ch8);
-
         if ((sample_idx % 25U) == 0U) {
             gpio_pin_toggle_dt(&led);
+            printk("sample=%lu status=%02X%02X%02X header=%s "
+                   "ch1=%ld ch2=%ld ch3=%ld ch4=%ld "
+                   "ch5=%ld ch6=%ld ch7=%ld ch8=%ld\n",
+                   (unsigned long)sample_idx,
+                   frame[0], frame[1], frame[2],
+                   status_header_ok ? "OK" : "BAD",
+                   (long)ch1, (long)ch2, (long)ch3, (long)ch4,
+                   (long)ch5, (long)ch6, (long)ch7, (long)ch8);
         }
 
         sample_idx++;
-    }
+    } 
 
     return 0;
 }
