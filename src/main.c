@@ -406,6 +406,61 @@ static int ads_dump_test_regs(void)
     return 0;
 }
 
+static int ads_configure_external_inputs_all(void)
+{
+    int ret;
+
+    /* Stop continuous data mode and conversions before writing registers */
+    ret = ads_send_cmd(CMD_SDATAC);
+    if (ret) {
+        return ret;
+    }
+    k_sleep(K_MSEC(2));
+
+    ret = ads_send_cmd(CMD_STOP);
+    if (ret) {
+        return ret;
+    }
+    k_sleep(K_MSEC(2));
+
+    /* CONFIG1 = 0x96: 250 SPS, DAISY disabled, internal clock (same as you had) */
+    ret = ads_write_reg(REG_CONFIG1, 0x96);
+    if (ret) {
+        return ret;
+    }
+
+    /* CONFIG2 = 0xC0: INT_CAL=0 → internal test signals disabled [8] */
+    ret = ads_write_reg(REG_CONFIG2, 0xC0);
+    if (ret) {
+        return ret;
+    }
+
+    /* CONFIG3 = 0xE0: PD_REFBUF=1 (enable internal reference buffer) [5] */
+    ret = ads_write_reg(REG_CONFIG3, 0xE0);
+    if (ret) {
+        return ret;
+    }
+
+    /*
+     * CHnSET = 0x60:
+     *   PDn = 0 (powered), GAIN = 110 (x24), SRB2 = 0, MUX = 000 (normal electrode input) [9].
+     *   Do this for all eight channels.
+     */
+    const uint8_t chset_all[ADS_NUM_CHANNELS] = {
+        0x60, 0x60, 0x60, 0x60,
+        0x60, 0x60, 0x60, 0x60,
+    };
+    ret = ads_write_regs(REG_CH1SET, chset_all, sizeof(chset_all));
+    if (ret) {
+        return ret;
+    }
+
+    k_sleep(K_MSEC(2));
+    printk("ADS1299 external input mode registers written\n");
+    return 0;
+}
+
+
 static int ads_configure_internal_test_signal(void)
 {
     int ret;
@@ -575,11 +630,18 @@ int main(void)
 
     printk("ADS1299 ID: 0x%02X\n", id);
 
-    ret = ads_configure_internal_test_signal();
+    /* ret = ads_configure_internal_test_signal();
     if (ret) {
         printk("ADS test signal configuration failed: %d\n", ret);
         return 0;
+    } */
+
+    ret = ads_configure_external_inputs_all();
+    if (ret) {
+        printk("ADS external input configuration failed: %d\n", ret);
+        return 0;
     }
+
 
     /*
      * Dump registers before RDATAC. Register access should be done outside
@@ -594,7 +656,11 @@ int main(void)
     ads_send_cmd(CMD_SDATAC);
     k_sleep(K_MSEC(2));
 
-    ads_configure_internal_test_signal();
+    ret = ads_configure_external_inputs_all();
+    if (ret) {
+        printk("ADS external input configuration failed: %d\n", ret);
+        return 0;
+    }
 
     ads_send_cmd(CMD_RDATAC);
     k_sleep(K_MSEC(2));
@@ -602,8 +668,8 @@ int main(void)
     ads_send_cmd(CMD_START);
     k_sleep(K_MSEC(20));
 
-    printk("Streaming internal test signal. Expect ~1 Hz square wave.\n");
-    printk("Polling DRDY and reading %d-byte frames.\n", ADS_FRAME_BYTES);
+    //printk("Streaming internal test signal. Expect ~1 Hz square wave.\n");
+    //printk("Polling DRDY and reading %d-byte frames.\n", ADS_FRAME_BYTES);
 
     while (1) {
         k_sem_take(&drdy_sem, K_FOREVER);
@@ -627,18 +693,26 @@ int main(void)
 
         if ((sample_idx % 25U) == 0U) {
             gpio_pin_toggle_dt(&led);
-            printk("sample=%lu status=%02X%02X%02X header=%s "
+            /* printk("sample=%lu status=%02X%02X%02X header=%s "
                    "ch1=%ld ch2=%ld ch3=%ld ch4=%ld "
                    "ch5=%ld ch6=%ld ch7=%ld ch8=%ld\n",
                    (unsigned long)sample_idx,
                    frame[0], frame[1], frame[2],
                    status_header_ok ? "OK" : "BAD",
                    (long)ch1, (long)ch2, (long)ch3, (long)ch4,
-                   (long)ch5, (long)ch6, (long)ch7, (long)ch8);
+                   (long)ch5, (long)ch6, (long)ch7, (long)ch8); */
 
-            char msg[64];
-            int len = snprintf(msg, sizeof(msg), "sample=%lu ch1=%ld\r\n",
-                    (unsigned long)sample_idx, (long)ch1);
+            char msg[256];
+            int len = snprintf(msg, sizeof(msg),
+                "sample=%lu status=%02X%02X%02X header=%s "
+                "ch1=%ld ch2=%ld ch3=%ld ch4=%ld "
+                "ch5=%ld ch6=%ld ch7=%ld ch8=%ld\r\n",
+                (unsigned long)sample_idx,
+                frame[1], frame[2], frame[3],
+                status_header_ok ? "OK" : "BAD",
+                (long)ch1, (long)ch2, (long)ch3, (long)ch4,
+                (long)ch5, (long)ch6, (long)ch7, (long)ch8);
+
             cdc_print(msg, len);
         }
 
