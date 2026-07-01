@@ -109,6 +109,13 @@ static int enable_usb_device_next(void)
 	return 0;
 }
 
+static void cdc_print(const char *msg, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        uart_poll_out(uart_dev, msg[i]);
+    }
+}
+
 /*
  * ADS1299 SPI timing is CPOL = 0, CPHA = 1 according to the datasheet [14].
  */
@@ -630,8 +637,9 @@ int main(void)
                    (long)ch5, (long)ch6, (long)ch7, (long)ch8);
 
             char msg[64];
-            int len = snprintf(msg, sizeof(msg), "Hello, count");
-            uart_fifo_fill(uart_dev, msg, len);
+            int len = snprintf(msg, sizeof(msg), "sample=%lu ch1=%ld\r\n",
+                    (unsigned long)sample_idx, (long)ch1);
+            cdc_print(msg, len);
         }
 
         sample_idx++;
