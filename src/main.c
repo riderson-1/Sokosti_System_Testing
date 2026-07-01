@@ -8,7 +8,15 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <zephyr/usb/usb_device.h>
+
+#include <stdio.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/usb/usbd.h>
+#include "sample_usbd.h"
+
+LOG_MODULE_REGISTER(cdc_acm_print, LOG_LEVEL_INF);
 
 #define CMD_WAKEUP   0x02
 #define CMD_STANDBY  0x04
@@ -46,6 +54,60 @@
 #define START_NODE      DT_NODELABEL(global_start)
 #define DRDY_NODE       DT_NODELABEL(drdy_ads)
 #define ADS_CLK_NODE    DT_ALIAS(adsclk)
+
+const struct device *const uart_dev = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
+
+static struct usbd_context *sample_usbd;
+K_SEM_DEFINE(dtr_sem, 0, 1);
+
+static void sample_msg_cb(struct usbd_context *const ctx, const struct usbd_msg *msg)
+{
+	LOG_INF("USBD message: %s", usbd_msg_type_string(msg->type));
+
+	if (usbd_can_detect_vbus(ctx)) {
+		if (msg->type == USBD_MSG_VBUS_READY) {
+			if (usbd_enable(ctx)) {
+				LOG_ERR("Failed to enable device support");
+			}
+		}
+		if (msg->type == USBD_MSG_VBUS_REMOVED) {
+			if (usbd_disable(ctx)) {
+				LOG_ERR("Failed to disable device support");
+			}
+		}
+	}
+
+	if (msg->type == USBD_MSG_CDC_ACM_CONTROL_LINE_STATE) {
+		uint32_t dtr = 0U;
+
+		uart_line_ctrl_get(msg->dev, UART_LINE_CTRL_DTR, &dtr);
+		if (dtr) {
+			k_sem_give(&dtr_sem);
+		}
+	}
+}
+
+static int enable_usb_device_next(void)
+{
+	int err;
+
+	sample_usbd = sample_usbd_init_device(sample_msg_cb);
+	if (sample_usbd == NULL) {
+		LOG_ERR("Failed to initialize USB device");
+		return -ENODEV;
+	}
+
+	if (!usbd_can_detect_vbus(sample_usbd)) {
+		err = usbd_enable(sample_usbd);
+		if (err) {
+			LOG_ERR("Failed to enable device support");
+			return err;
+		}
+	}
+
+	LOG_INF("USB device support enabled");
+	return 0;
+}
 
 /*
  * ADS1299 SPI timing is CPOL = 0, CPHA = 1 according to the datasheet [14].
@@ -435,6 +497,23 @@ int main(void)
     uint8_t frame[ADS_FRAME_BYTES];
     uint32_t sample_idx = 0;
 
+    if (!device_is_ready(uart_dev)) {
+        LOG_ERR("CDC ACM device not ready");
+        return 0;
+    }
+
+    ret = enable_usb_device_next();
+    if (ret != 0) {
+        LOG_ERR("Failed to enable USB device support");
+        return 0;
+    }
+
+    LOG_INF("Wait for DTR");
+    k_sem_take(&dtr_sem, K_FOREVER);
+    LOG_INF("DTR set");
+
+    k_msleep(100);
+
     k_sleep(K_MSEC(500));
     printk("ADS1299 internal test signal capture starting...\n");
 
@@ -454,7 +533,6 @@ int main(void)
         printk("DRDY interrupt setup failed: %d\n", ret);
         return 0;
     }
-
 
     /*
      * Keep START pin low and use the SPI START command.
@@ -506,7 +584,6 @@ int main(void)
         return 0;
     }
 
-
     ads_send_cmd(CMD_SDATAC);
     k_sleep(K_MSEC(2));
 
@@ -518,11 +595,10 @@ int main(void)
     ads_send_cmd(CMD_START);
     k_sleep(K_MSEC(20));
 
-
     printk("Streaming internal test signal. Expect ~1 Hz square wave.\n");
     printk("Polling DRDY and reading %d-byte frames.\n", ADS_FRAME_BYTES);
 
-while (1) {
+    while (1) {
         k_sem_take(&drdy_sem, K_FOREVER);
 
         ret = ads_read_frame_rdatac(frame);
@@ -552,10 +628,14 @@ while (1) {
                    status_header_ok ? "OK" : "BAD",
                    (long)ch1, (long)ch2, (long)ch3, (long)ch4,
                    (long)ch5, (long)ch6, (long)ch7, (long)ch8);
+
+            char msg[64];
+            int len = snprintf(msg, sizeof(msg), "Hello, count");
+            uart_fifo_fill(uart_dev, msg, len);
         }
 
         sample_idx++;
-    } 
+    }
 
     return 0;
 }
