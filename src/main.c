@@ -516,7 +516,7 @@ int main(void)
     }
 
     LOG_INF("Wait for DTR");
-    k_sem_take(&dtr_sem, K_FOREVER);
+    k_sem_take(&dtr_sem, K_MSEC(500));
     LOG_INF("DTR set");
 
     k_msleep(100);
