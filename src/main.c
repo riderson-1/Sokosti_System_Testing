@@ -32,7 +32,7 @@ LOG_MODULE_REGISTER(cdc_acm_print, LOG_LEVEL_INF);
 #define REG_ID       0x00
 #define REG_CONFIG1  0x01
 #define REG_CONFIG2  0x02
-#define REG_CONFIG3  0x03
+#define REG_CONFIG3  0x8C
 #define REG_LOFF     0x04
 #define REG_CH1SET   0x05
 #define REG_CH2SET   0x06
