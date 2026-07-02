@@ -671,9 +671,12 @@ int main(void)
     //printk("Streaming internal test signal. Expect ~1 Hz square wave.\n");
     //printk("Polling DRDY and reading %d-byte frames.\n", ADS_FRAME_BYTES);
 
+    /* Send once, before entering the loop */
+    static const char hdr[] = "sample,status_ok,ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8\r\n";
+    cdc_print(hdr, sizeof(hdr) - 1);
+
     while (1) {
         k_sem_take(&drdy_sem, K_FOREVER);
-
         ret = ads_read_frame_rdatac(frame);
         if (ret) {
             printk("Frame read failed: %d\n", ret);
@@ -691,29 +694,17 @@ int main(void)
         int32_t ch7 = ads_decode24(&frame[21]);
         int32_t ch8 = ads_decode24(&frame[24]);
 
-        if ((sample_idx % 25U) == 0U) {
-            gpio_pin_toggle_dt(&led);
-            /* printk("sample=%lu status=%02X%02X%02X header=%s "
-                   "ch1=%ld ch2=%ld ch3=%ld ch4=%ld "
-                   "ch5=%ld ch6=%ld ch7=%ld ch8=%ld\n",
-                   (unsigned long)sample_idx,
-                   frame[0], frame[1], frame[2],
-                   status_header_ok ? "OK" : "BAD",
-                   (long)ch1, (long)ch2, (long)ch3, (long)ch4,
-                   (long)ch5, (long)ch6, (long)ch7, (long)ch8); */
+        char msg[96];
+        int len = snprintf(msg, sizeof(msg),
+            "%lu,%d,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
+            (unsigned long)sample_idx,
+            status_header_ok ? 1 : 0,
+            (long)ch1, (long)ch2, (long)ch3, (long)ch4,
+            (long)ch5, (long)ch6, (long)ch7, (long)ch8);
+        cdc_print(msg, len);
 
-            char msg[256];
-            int len = snprintf(msg, sizeof(msg),
-                "sample=%lu status=%02X%02X%02X header=%s "
-                "ch1=%ld ch2=%ld ch3=%ld ch4=%ld "
-                "ch5=%ld ch6=%ld ch7=%ld ch8=%ld\r\n",
-                (unsigned long)sample_idx,
-                frame[1], frame[2], frame[3],
-                status_header_ok ? "OK" : "BAD",
-                (long)ch1, (long)ch2, (long)ch3, (long)ch4,
-                (long)ch5, (long)ch6, (long)ch7, (long)ch8);
-
-            cdc_print(msg, len);
+        if ((sample_idx % 250U) == 0U) {
+            gpio_pin_toggle_dt(&led);   /* heartbeat, once per second */
         }
 
         sample_idx++;
