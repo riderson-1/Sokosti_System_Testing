@@ -10,5 +10,5 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(sokosti_system_integration_test)
 
 # NORDIC SDK APP START
-target_sources(app PRIVATE src/main.c src/sample_usbd_init.c)
+target_sources(app PRIVATE src/main.c src/sample_usbd_init.c src/ads1299_driver.c)
 # NORDIC SDK APP END
