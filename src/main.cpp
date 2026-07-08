@@ -191,11 +191,21 @@ int main(void)
         return 0;
     }
 
+     
     ret = ads.configureExternalInputsAll();
     if (ret) {
         printk("ADS external input configuration failed: %d\n", ret);
         return 0;
-    }
+    } 
+    
+
+    /*
+    ret = ads.configureInternalTestSignal();
+    if (ret) {
+        printk("ADS test signal configuration failed: %d\n", ret);
+        return 0;
+    } 
+    */ 
 
     /*
      * Dump registers before RDATAC. Register access should be done outside
@@ -257,25 +267,26 @@ int main(void)
             continue;
         }
 
-        bool status1_ok = ((frame[1] & 0xF0) == 0xC0);
-        bool status2_ok = ((frame[12] & 0xF0) == 0xC0);
-
+        // Device 1 (logical channels 1–8)
+        bool status1_ok = ((frame[0] & 0xF0) == 0xC0);   // was frame[1]
         int32_t ch1  = ADS1299::decode24(&frame[3]);
-        int32_t ch2  = ADS1299::decode24(&frame[4]);
-        int32_t ch3  = ADS1299::decode24(&frame[6]);
-        int32_t ch4  = ADS1299::decode24(&frame[7]);
-        int32_t ch5  = ADS1299::decode24(&frame[8]);
-        int32_t ch6  = ADS1299::decode24(&frame[9]);
-        int32_t ch7  = ADS1299::decode24(&frame[10]);
-        int32_t ch8  = ADS1299::decode24(&frame[11]);
+        int32_t ch2  = ADS1299::decode24(&frame[6]);
+        int32_t ch3  = ADS1299::decode24(&frame[9]);
+        int32_t ch4  = ADS1299::decode24(&frame[12]);
+        int32_t ch5  = ADS1299::decode24(&frame[15]);
+        int32_t ch6  = ADS1299::decode24(&frame[18]);
+        int32_t ch7  = ADS1299::decode24(&frame[21]);
+        int32_t ch8  = ADS1299::decode24(&frame[24]);
 
-        int32_t ch9  = ADS1299::decode24(&frame[13]);
-        int32_t ch10 = ADS1299::decode24(&frame[14]);
-        int32_t ch11 = ADS1299::decode24(&frame[15]);
-        int32_t ch12 = ADS1299::decode24(&frame[16]);
-        int32_t ch13 = ADS1299::decode24(&frame[17]);
-        int32_t ch14 = ADS1299::decode24(&frame[18]);
-        int32_t ch15 = ADS1299::decode24(&frame[19]);
+        // Device 2 (logical channels 9–16)
+        bool status2_ok = ((frame[27] & 0xF0) == 0xC0);  // was frame[12] — that was actually inside device 1's ch4!
+        int32_t ch9  = ADS1299::decode24(&frame[30]);
+        int32_t ch10 = ADS1299::decode24(&frame[33]);
+        int32_t ch11 = ADS1299::decode24(&frame[36]);
+        int32_t ch12 = ADS1299::decode24(&frame[39]);
+        int32_t ch13 = ADS1299::decode24(&frame[42]);
+        int32_t ch14 = ADS1299::decode24(&frame[45]);
+        int32_t ch15 = ADS1299::decode24(&frame[48]);
         int32_t ch16 = ADS1299::decode24(&frame[51]);
 
         char msg[192];

@@ -303,6 +303,11 @@ int ADS1299::configureInternalTestSignal()
         0x05, 0x05, 0x05, 0x05,
     };
 
+    const uint8_t chset_selected[ADS_NUM_CHANNELS] = {
+        0x05, 0x81, 0x81, 0x81,
+        0x81, 0x81, 0x81, 0x81,
+    };
+
     printk("Configuring ADS1299 internal test signal mode...\n");
 
     /*
@@ -365,7 +370,7 @@ int ADS1299::configureInternalTestSignal()
         return ret;
     }
 
-    ret = writeRegisters(REG_CH1SET, chset_all, sizeof(chset_all));
+    ret = writeRegisters(REG_CH1SET, chset_selected, sizeof(chset_selected));
     if (ret) {
         return ret;
     }
