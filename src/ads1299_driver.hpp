@@ -48,6 +48,7 @@ public:
 
     /* streaming */
     int stopContinuousRead();
+    int stopConversions();
     int startConversions();
     int startContinuousRead();
 

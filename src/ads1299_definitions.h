@@ -48,5 +48,6 @@
 #define MISC2       0x16
 #define CONFIG4     0x17
 
-#define ADS_NUM_CHANNELS 8
-#define ADS_FRAME_BYTES  (3 + ADS_NUM_CHANNELS * 3)
+#define ADS_NUM_DEVICES 2
+#define ADS_NUM_CHANNELS 8 // daisy chain
+#define ADS_FRAME_BYTES  (ADS_NUM_DEVICES * (3 + ADS_NUM_CHANNELS * 3))

@@ -175,8 +175,10 @@ int ADS1299::init(uint8_t *id_out)
 
     // 4. send SDATAC
     stopContinuousRead();
-
-    k_sleep(K_MSEC(2));
+    if (ret) {
+        printk("ADS1299: SDATAC failed: %d\n", ret);
+        return ret;
+    }
 
     // 5. read ID register
     ret = readRegister(REG_ID, &id);
@@ -236,17 +238,15 @@ int ADS1299::configureExternalInputsAll()
     int ret;
 
     /* Stop continuous data mode and conversions before writing registers */
-    ret = sendCommand(CMD_SDATAC);
+    ret = stopContinuousRead();
     if (ret) {
         return ret;
     }
-    k_sleep(K_MSEC(2));
 
-    ret = sendCommand(CMD_STOP);
+    ret = stopConversions();
     if (ret) {
         return ret;
     }
-    k_sleep(K_MSEC(2));
 
     /* CONFIG1 = 0x96: 250 SPS, DAISY disabled, internal clock (same as you had) */
     ret = writeRegister(REG_CONFIG1, 0x96);
@@ -325,13 +325,13 @@ int ADS1299::configureInternalTestSignal()
     k_sleep(K_MSEC(2));
 
     /*
-     * CONFIG1 = 0x96:
-     *   Reserved bit7 = 1
-     *   DAISY_EN = 0 / standalone-style setting requested
-     *   CLK_EN = 0
-     *   Reserved bits4:3 = 10
-     *   DR[2:0] = 110 -> 250 SPS [10], [13].
-     */
+    * CONFIG1 = 0x96:
+    *   bit7 = 1 reserved
+    *   DAISY_EN = 0 -> daisy-chain mode according to datasheet table
+    *   CLK_EN = 0 -> do not output internal oscillator
+    *   bits4:3 = 10 reserved
+    *   DR[2:0] = 110 -> 250 SPS
+    */
     ret = writeRegister(REG_CONFIG1, 0x96);
     if (ret) {
         return ret;
@@ -411,5 +411,16 @@ int ADS1299::startConversions()
      * If using the START command, keep START pin low.
      */
     k_sleep(K_MSEC(20));
+    return 0;
+}
+
+int ADS1299::stopConversions()
+{
+    int ret = sendCommand(CMD_STOP);
+    if (ret) {
+        return ret;
+    }
+
+    k_sleep(K_MSEC(2));
     return 0;
 }
