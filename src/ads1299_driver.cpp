@@ -153,34 +153,39 @@ void ADS1299::hwReset()
     k_sleep(K_MSEC(50));
 }
 
-int ADS1299::readId(uint8_t *id)
+int ADS1299::init(uint8_t *id_out)
 {
     int ret;
+    uint8_t id = 0;
 
-    /*
-     * Device defaults to RDATAC after power-up; stop continuous mode before
-     * register reads/writes [25].
-     */
-    ret = sendCommand(CMD_SDATAC);
+    k_sleep(K_MSEC(20));
+
+    // 1. hw reset
+    hwReset();
+
+    // 2. send reset command
+    ret = sendCommand(CMD_RESET);
     if (ret) {
+        printk("CMD_RESET failed: %d\n", ret);
         return ret;
     }
 
+    // 3. wait longer than 18 tCLK
+    k_sleep(K_MSEC(10));
+
+    // 4. send SDATAC
+    stopContinuousRead();
+
     k_sleep(K_MSEC(2));
 
-    return readRegister(REG_ID, id);
-}
-
-bool ADS1299::begin()
-{
-    hwReset();
-
-    uint8_t id = 0;
-    if (readId(&id) != 0) {
+    // 5. read ID register
+    ret = readRegister(REG_ID, &id);
+    if (ret != 0) {
         printk("ADS1299: ID register read failed\n");
         return false;
     }
-
+    
+    // 6. validate device
     /* ADS1299 family ID: lower 5 bits should read 0x1E (Datasheet, REG_ID) */
     if ((id & 0x1F) != 0x1E) {
         printk("ADS1299: unexpected ID 0x%02X (expected low 5 bits = 0x1E)\n", id);
@@ -188,7 +193,9 @@ bool ADS1299::begin()
     }
 
     printk("ADS1299 detected, ID = 0x%02X\n", id);
-    return true;
+
+    // 7. Leave ADS in SDATAC so registers can be configured
+    return 0;
 }
 
 int ADS1299::dumpTestRegisters()
@@ -366,5 +373,43 @@ int ADS1299::configureInternalTestSignal()
     k_sleep(K_MSEC(2));
 
     printk("ADS1299 internal test signal registers written\n");
+    return 0;
+}
+
+int ADS1299::stopContinuousRead()
+{
+    int ret = sendCommand(CMD_SDATAC);
+    if (ret) {
+        return ret;
+    }
+
+    k_sleep(K_MSEC(2));
+
+    return 0;
+}
+
+int ADS1299::startContinuousRead()
+{
+    int ret = sendCommand(CMD_RDATAC);
+    if (ret) {
+        return ret;
+    }
+
+    k_sleep(K_MSEC(2));
+    return 0;
+}
+
+int ADS1299::startConversions()
+{
+    int ret = sendCommand(CMD_START);
+    if (ret) {
+        return ret;
+    }
+
+    /*
+     * Conversions begin when START pin is high or START command is sent.
+     * If using the START command, keep START pin low.
+     */
+    k_sleep(K_MSEC(20));
     return 0;
 }

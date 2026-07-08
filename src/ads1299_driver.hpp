@@ -35,13 +35,32 @@ public:
     ADS1299(const struct spi_dt_spec &spi, const struct gpio_dt_spec &reset_gpio);
 
     /**
-     * Bring-up helper: hardware-resets the device, reads the ID register,
-     * and confirms it matches the ADS1299 family ID (lower 5 bits = 0x1E),
-     * mirroring BME_ADS1299::begin().
-     *
-     * @return true if an ADS1299 was detected, false otherwise.
+     * @brief initialization of ads1299
+     * 
+     * @return int 
      */
-    bool begin();
+    int init(uint8_t *id_out);
+
+    /* configuration */
+    int dumpTestRegisters();
+    int configureExternalInputsAll();
+    int configureInternalTestSignal();
+
+    /* streaming */
+    int stopContinuousRead();
+    int startConversions();
+    int startContinuousRead();
+
+    // ---- Data acquisition (RDATAC mode) ----
+    int readFrameRdatac(uint8_t frame[ADS_FRAME_BYTES]);
+
+    // ---- Utility ----
+    static int32_t decode24(const uint8_t *p);
+
+private:
+    
+    int spiWriteBytes(const uint8_t *data, size_t len);
+    int spiTransceiveBytes(const uint8_t *tx_data, uint8_t *rx_data, size_t len);
 
     // ---- System commands (Datasheet, pg. 35) ----
     int sendCommand(uint8_t cmd);
@@ -52,21 +71,6 @@ public:
     int writeRegister(uint8_t reg, uint8_t value);
     int writeRegisters(uint8_t start_reg, const uint8_t *values, size_t count);
 
-    // ---- High-level helpers ----
-    int readId(uint8_t *id);
-    int dumpTestRegisters();
-    int configureExternalInputsAll();
-    int configureInternalTestSignal();
-
-    // ---- Data acquisition (RDATAC mode) ----
-    int readFrameRdatac(uint8_t frame[ADS_FRAME_BYTES]);
-
-    // ---- Utility ----
-    static int32_t decode24(const uint8_t *p);
-
-private:
-    int spiWriteBytes(const uint8_t *data, size_t len);
-    int spiTransceiveBytes(const uint8_t *tx_data, uint8_t *rx_data, size_t len);
 
     struct spi_dt_spec spi_;
     struct gpio_dt_spec reset_gpio_;

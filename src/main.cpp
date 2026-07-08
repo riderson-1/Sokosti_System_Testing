@@ -139,6 +139,10 @@ int main(void)
     uint8_t frame[ADS_FRAME_BYTES];
     uint32_t sample_idx = 0;
 
+    // ---------------------------------------
+    // board setup
+    // ---------------------------------------
+
     ret = usb_cdc::init();
     if (ret != 0) {
         printk("USB CDC init failed: %d\n", ret);
@@ -177,34 +181,15 @@ int main(void)
         printk("Warning: ADS clock not running: %d\n", ret);
     }
 
-    k_sleep(K_MSEC(20));
+    // ---------------------------------------
+    // ADS1299 setup
+    // ---------------------------------------
 
-    ads.hwReset();
-
-    ret = ads.sendCommand(CMD_RESET);
+    ret = ads.init(&id);
     if (ret) {
-        printk("CMD_RESET failed: %d\n", ret);
+        printk("ADS1299 init failed: %d\n", ret);
         return 0;
     }
-
-    /*
-     * RESET command requires 18 tCLK cycles; wait longer than required [8], [26].
-     */
-    k_sleep(K_MSEC(10));
-
-    ret = ads.readId(&id);
-    if (ret) {
-        printk("ADS1299 ID read failed: %d\n", ret);
-        return 0;
-    }
-
-    printk("ADS1299 ID: 0x%02X\n", id);
-
-    /* ret = ads.configureInternalTestSignal();
-    if (ret) {
-        printk("ADS test signal configuration failed: %d\n", ret);
-        return 0;
-    } */
 
     ret = ads.configureExternalInputsAll();
     if (ret) {
@@ -222,20 +207,21 @@ int main(void)
         return 0;
     }
 
-    ads.sendCommand(CMD_SDATAC);
-    k_sleep(K_MSEC(2));
-
-    ret = ads.configureExternalInputsAll();
+    ads.startContinuousRead();
     if (ret) {
-        printk("ADS external input configuration failed: %d\n", ret);
+        printk("ADS RDATAC failed: %d\n", ret);
         return 0;
     }
 
-    ads.sendCommand(CMD_RDATAC);
-    k_sleep(K_MSEC(2));
+    ads.startConversions();
+    if (ret) {
+        printk("ADS START failed: %d\n", ret);
+        return 0;
+    }
 
-    ads.sendCommand(CMD_START);
-    k_sleep(K_MSEC(20));
+    // ---------------------------------------
+    // main loop
+    // ---------------------------------------
 
     /* Send once, before entering the loop */
     static const char hdr[] = "sample,status_ok,ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8\r\n";
