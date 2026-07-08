@@ -1,58 +1,60 @@
 /**
- * @file ads1299_driver.c
- * @author your name (you@domain.com)
- * @brief 
- * @version 0.1
- * @date 2026-07-07
- * 
- * @copyright Copyright (c) 2026
- * 
+ * @file ADS1299.cpp
+ * @brief Zephyr C++ driver class for the TI ADS1299 8-channel EMG ADC.
+ * @version 0.2
+ * @date 2026-07-08
  */
 
-#include "ads1299_driver.h"
+#include "ads1299_driver.hpp"
 
-int ads_spi_write_bytes(const uint8_t *data, size_t len)
+ADS1299::ADS1299(const struct spi_dt_spec &spi, const struct gpio_dt_spec &reset_gpio)
+    : spi_(spi), reset_gpio_(reset_gpio)
 {
-    struct spi_buf txb = {
-        .buf = (void *)data,
-        .len = len,
-    };
-    struct spi_buf_set txs = {
-        .buffers = &txb,
-        .count = 1,
-    };
-
-    return spi_write_dt(&ads_spi, &txs);
 }
 
-int ads_spi_transceive_bytes(const uint8_t *tx_data,
-                    uint8_t *rx_data,
-                    size_t len)
+int ADS1299::spiWriteBytes(const uint8_t *data, size_t len)
 {
-    struct spi_buf txb = {
-        .buf = (void *)tx_data,
-        .len = len,
-    };
-    struct spi_buf_set txs = {
-        .buffers = &txb,
-        .count = 1,
-    };
+    /*
+     * NOTE: designated initializers (.buf = ..., .len = ...) are avoided
+     * here on purpose. They're a C++20 feature (GCC accepts them earlier
+     * as an extension, but it's not portable across -std= settings), so
+     * plain field assignment is used instead for a clean C -> C++ port.
+     */
+    struct spi_buf txb;
+    txb.buf = (void *)data;
+    txb.len = len;
 
-    struct spi_buf rxb = {
-        .buf = rx_data,
-        .len = len,
-    };
-    struct spi_buf_set rxs = {
-        .buffers = &rxb,
-        .count = 1,
-    };
+    struct spi_buf_set txs;
+    txs.buffers = &txb;
+    txs.count = 1;
 
-    return spi_transceive_dt(&ads_spi, &txs, &rxs);
+    return spi_write_dt(&spi_, &txs);
 }
 
-int ads_send_cmd(uint8_t cmd)
+int ADS1299::spiTransceiveBytes(const uint8_t *tx_data, uint8_t *rx_data, size_t len)
 {
-    int ret = ads_spi_write_bytes(&cmd, 1);
+    struct spi_buf txb;
+    txb.buf = (void *)tx_data;
+    txb.len = len;
+
+    struct spi_buf_set txs;
+    txs.buffers = &txb;
+    txs.count = 1;
+
+    struct spi_buf rxb;
+    rxb.buf = rx_data;
+    rxb.len = len;
+
+    struct spi_buf_set rxs;
+    rxs.buffers = &rxb;
+    rxs.count = 1;
+
+    return spi_transceive_dt(&spi_, &txs, &rxs);
+}
+
+int ADS1299::sendCommand(uint8_t cmd)
+{
+    int ret = spiWriteBytes(&cmd, 1);
 
     /*
      * ADS1299 commands require decode time. The datasheet says commands
@@ -63,7 +65,7 @@ int ads_send_cmd(uint8_t cmd)
     return ret;
 }
 
-int ads_read_reg(uint8_t reg, uint8_t *value)
+int ADS1299::readRegister(uint8_t reg, uint8_t *value)
 {
     uint8_t tx[4] = {
         (uint8_t)(CMD_RREG | reg),
@@ -72,7 +74,7 @@ int ads_read_reg(uint8_t reg, uint8_t *value)
     };
     uint8_t rx[4] = { 0 };
 
-    int ret = ads_spi_transceive_bytes(tx, rx, sizeof(tx));
+    int ret = spiTransceiveBytes(tx, rx, sizeof(tx));
     if (ret == 0) {
         *value = rx[3];
     }
@@ -80,7 +82,7 @@ int ads_read_reg(uint8_t reg, uint8_t *value)
     return ret;
 }
 
-int ads_write_reg(uint8_t reg, uint8_t value)
+int ADS1299::writeRegister(uint8_t reg, uint8_t value)
 {
     uint8_t tx[4] = {
         (uint8_t)(CMD_WREG | reg),
@@ -88,12 +90,12 @@ int ads_write_reg(uint8_t reg, uint8_t value)
         value,
     };
 
-    int ret = ads_spi_write_bytes(tx, sizeof(tx));
+    int ret = spiWriteBytes(tx, sizeof(tx));
     k_busy_wait(10);
     return ret;
 }
 
-int ads_write_regs(uint8_t start_reg, const uint8_t *values, size_t count)
+int ADS1299::writeRegisters(uint8_t start_reg, const uint8_t *values, size_t count)
 {
     uint8_t tx[3 + ADS_NUM_CHANNELS];   /* cmd + count_byte + up to 8 data bytes */
 
@@ -105,12 +107,12 @@ int ads_write_regs(uint8_t start_reg, const uint8_t *values, size_t count)
     tx[1] = (uint8_t)(count - 1);
     memcpy(&tx[2], values, count);
 
-    int ret = ads_spi_write_bytes(tx, 2 + count);
+    int ret = spiWriteBytes(tx, 2 + count);
     k_busy_wait(10);
     return ret;
 }
 
-int32_t ads_decode24(const uint8_t *p)
+int32_t ADS1299::decode24(const uint8_t *p)
 {
     int32_t v = ((int32_t)p[0] << 16) |
                 ((int32_t)p[1] << 8)  |
@@ -128,12 +130,12 @@ int32_t ads_decode24(const uint8_t *p)
  * 24 status bits + 24 bits per channel.
  * For 8 channels this is 27 bytes total [22], [23].
  */
-int ads_read_frame_rdatac(uint8_t frame[ADS_FRAME_BYTES])
+int ADS1299::readFrameRdatac(uint8_t frame[ADS_FRAME_BYTES])
 {
     uint8_t tx[ADS_FRAME_BYTES] = { 0 };
     uint8_t rx[ADS_FRAME_BYTES] = { 0 };
 
-    int ret = ads_spi_transceive_bytes(tx, rx, sizeof(tx));
+    int ret = spiTransceiveBytes(tx, rx, sizeof(tx));
     if (ret) {
         return ret;
     }
@@ -142,16 +144,16 @@ int ads_read_frame_rdatac(uint8_t frame[ADS_FRAME_BYTES])
     return 0;
 }
 
-void ads_hw_reset(void)
+void ADS1299::hwReset()
 {
-    gpio_pin_set_dt(&reset_pin, 1);
+    gpio_pin_set_dt(&reset_gpio_, 1);
     k_sleep(K_MSEC(10));
 
-    gpio_pin_set_dt(&reset_pin, 0);
+    gpio_pin_set_dt(&reset_gpio_, 0);
     k_sleep(K_MSEC(50));
 }
 
-int ads_read_id(uint8_t *id)
+int ADS1299::readId(uint8_t *id)
 {
     int ret;
 
@@ -159,17 +161,37 @@ int ads_read_id(uint8_t *id)
      * Device defaults to RDATAC after power-up; stop continuous mode before
      * register reads/writes [25].
      */
-    ret = ads_send_cmd(CMD_SDATAC);
+    ret = sendCommand(CMD_SDATAC);
     if (ret) {
         return ret;
     }
 
     k_sleep(K_MSEC(2));
 
-    return ads_read_reg(REG_ID, id);
+    return readRegister(REG_ID, id);
 }
 
-int ads_dump_test_regs(void)
+bool ADS1299::begin()
+{
+    hwReset();
+
+    uint8_t id = 0;
+    if (readId(&id) != 0) {
+        printk("ADS1299: ID register read failed\n");
+        return false;
+    }
+
+    /* ADS1299 family ID: lower 5 bits should read 0x1E (Datasheet, REG_ID) */
+    if ((id & 0x1F) != 0x1E) {
+        printk("ADS1299: unexpected ID 0x%02X (expected low 5 bits = 0x1E)\n", id);
+        return false;
+    }
+
+    printk("ADS1299 detected, ID = 0x%02X\n", id);
+    return true;
+}
+
+int ADS1299::dumpTestRegisters()
 {
     int ret;
     uint8_t v;
@@ -190,7 +212,7 @@ int ads_dump_test_regs(void)
     };
 
     for (size_t i = 0; i < sizeof(regs); i++) {
-        ret = ads_read_reg(regs[i], &v);
+        ret = readRegister(regs[i], &v);
         if (ret) {
             printk("REG 0x%02X read failed: %d\n", regs[i], ret);
             return ret;
@@ -202,37 +224,37 @@ int ads_dump_test_regs(void)
     return 0;
 }
 
-int ads_configure_external_inputs_all(void)
+int ADS1299::configureExternalInputsAll()
 {
     int ret;
 
     /* Stop continuous data mode and conversions before writing registers */
-    ret = ads_send_cmd(CMD_SDATAC);
+    ret = sendCommand(CMD_SDATAC);
     if (ret) {
         return ret;
     }
     k_sleep(K_MSEC(2));
 
-    ret = ads_send_cmd(CMD_STOP);
+    ret = sendCommand(CMD_STOP);
     if (ret) {
         return ret;
     }
     k_sleep(K_MSEC(2));
 
     /* CONFIG1 = 0x96: 250 SPS, DAISY disabled, internal clock (same as you had) */
-    ret = ads_write_reg(REG_CONFIG1, 0x96);
+    ret = writeRegister(REG_CONFIG1, 0x96);
     if (ret) {
         return ret;
     }
 
-    /* CONFIG2 = 0xC0: INT_CAL=0 → internal test signals disabled [8] */
-    ret = ads_write_reg(REG_CONFIG2, 0xC0);
+    /* CONFIG2 = 0xC0: INT_CAL=0 -> internal test signals disabled [8] */
+    ret = writeRegister(REG_CONFIG2, 0xC0);
     if (ret) {
         return ret;
     }
 
     /* CONFIG3 = 0xE0: PD_REFBUF=1 (enable internal reference buffer) [5] */
-    ret = ads_write_reg(REG_CONFIG3, 0xE0);
+    ret = writeRegister(REG_CONFIG3, 0xE0);
     if (ret) {
         return ret;
     }
@@ -246,7 +268,7 @@ int ads_configure_external_inputs_all(void)
         0x60, 0x60, 0x60, 0x60,
         0x60, 0x60, 0x60, 0x60,
     };
-    ret = ads_write_regs(REG_CH1SET, chset_all, sizeof(chset_all));
+    ret = writeRegisters(REG_CH1SET, chset_all, sizeof(chset_all));
     if (ret) {
         return ret;
     }
@@ -256,8 +278,7 @@ int ads_configure_external_inputs_all(void)
     return 0;
 }
 
-
-int ads_configure_internal_test_signal(void)
+int ADS1299::configureInternalTestSignal()
 {
     int ret;
 
@@ -281,7 +302,7 @@ int ads_configure_internal_test_signal(void)
      * Stop continuous data mode before writing registers. RDATAC is the
      * default after power-up and is cancelled with SDATAC [25].
      */
-    ret = ads_send_cmd(CMD_SDATAC);
+    ret = sendCommand(CMD_SDATAC);
     if (ret) {
         return ret;
     }
@@ -290,7 +311,7 @@ int ads_configure_internal_test_signal(void)
     /*
      * Optional but clean: stop conversions while configuring.
      */
-    ret = ads_send_cmd(CMD_STOP);
+    ret = sendCommand(CMD_STOP);
     if (ret) {
         return ret;
     }
@@ -304,7 +325,7 @@ int ads_configure_internal_test_signal(void)
      *   Reserved bits4:3 = 10
      *   DR[2:0] = 110 -> 250 SPS [10], [13].
      */
-    ret = ads_write_reg(REG_CONFIG1, 0x96);
+    ret = writeRegister(REG_CONFIG1, 0x96);
     if (ret) {
         return ret;
     }
@@ -315,7 +336,7 @@ int ads_configure_internal_test_signal(void)
      *   CAL_AMP = 0 -> 1x test amplitude
      *   CAL_FREQ = 00 -> fCLK / 2^21 pulsed signal [13], [28].
      */
-    ret = ads_write_reg(REG_CONFIG2, 0xD0);
+    ret = writeRegister(REG_CONFIG2, 0xD0);
     if (ret) {
         return ret;
     }
@@ -332,12 +353,12 @@ int ads_configure_internal_test_signal(void)
      * explicitly shows WREG CONFIG3 E0h when using the internal reference [6],
      * so this code writes 0xE0 as requested.
      */
-    ret = ads_write_reg(REG_CONFIG3, 0xE0);
+    ret = writeRegister(REG_CONFIG3, 0xE0);
     if (ret) {
         return ret;
     }
 
-    ret = ads_write_regs(REG_CH1SET, chset_all, sizeof(chset_all));
+    ret = writeRegisters(REG_CH1SET, chset_all, sizeof(chset_all));
     if (ret) {
         return ret;
     }

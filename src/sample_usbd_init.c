@@ -9,8 +9,8 @@
 #include <zephyr/device.h>
 #include <zephyr/usb/usbd.h>
 #include <zephyr/usb/bos.h>
-
 #include <zephyr/logging/log.h>
+
 LOG_MODULE_REGISTER(usbd_sample_config);
 
 /* By default, do not register the USB DFU class DFU mode instance. */
