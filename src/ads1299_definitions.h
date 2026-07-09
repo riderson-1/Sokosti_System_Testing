@@ -36,17 +36,17 @@
 #define REG_CH6SET  0x0A
 #define REG_CH7SET  0x0B
 #define REG_CH8SET  0x0C
-#define BIAS_SENSP  0x0D
-#define BIAS_SENSN  0x0E
-#define LOFF_SENSP  0x0F
-#define LOFF_SENSN  0x10
-#define LOFF_FLIP   0x11
-#define LOFF_STATP  0x12
-#define LOFF_STATN  0x13
-#define GPIO        0x14
-#define MISC1       0x15
-#define MISC2       0x16
-#define CONFIG4     0x17
+#define REG_BIAS_SENSP  0x0D
+#define REG_BIAS_SENSN  0x0E
+#define REG_LOFF_SENSP  0x0F
+#define REG_LOFF_SENSN  0x10
+#define REG_LOFF_FLIP   0x11
+#define REG_LOFF_STATP  0x12
+#define REG_LOFF_STATN  0x13
+#define REG_GPIO        0x14
+#define REG_MISC1       0x15
+#define REG_MISC2       0x16
+#define REG_CONFIG4     0x17
 
 #define ADS_NUM_DEVICES 2
 #define ADS_NUM_CHANNELS 8 // daisy chain

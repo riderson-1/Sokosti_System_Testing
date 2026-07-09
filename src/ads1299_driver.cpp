@@ -266,14 +266,21 @@ int ADS1299::configureExternalInputsAll()
         return ret;
     }
 
+    /* MISC1 = 0x20: SRB1=1 This bit connects the SRB1 to all 4, 6, or 8 channels inverting
+    inputs */
+    ret = writeRegister(REG_MISC1, 0x20);
+    if (ret) {
+        return ret;
+    }
+
     /*
      * CHnSET = 0x60:
      *   PDn = 0 (powered), GAIN = 110 (x24), SRB2 = 0, MUX = 000 (normal electrode input) [9].
      *   Do this for all eight channels.
      */
     const uint8_t chset_all[ADS_NUM_CHANNELS] = {
-        0x60, 0x60, 0x60, 0x60,
-        0x60, 0x60, 0x60, 0x60,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
     };
     ret = writeRegisters(REG_CH1SET, chset_all, sizeof(chset_all));
     if (ret) {
