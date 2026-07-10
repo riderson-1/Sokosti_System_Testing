@@ -10,6 +10,112 @@
 ADS1299::ADS1299(const struct spi_dt_spec &spi, const struct gpio_dt_spec &reset_gpio)
     : spi_(spi), reset_gpio_(reset_gpio)
 {
+    for (auto &ch : settings.channel) {
+        ch.mux = 0;  // normal electrode input
+    }
+}
+
+int ADS1299::configure()
+{
+    int ret;
+
+    ret = sendCommand(CMD_SDATAC);
+    if (ret) return ret;
+    k_sleep(K_MSEC(2));
+
+    ret = sendCommand(CMD_STOP);
+    if (ret) return ret;
+    k_sleep(K_MSEC(2));
+
+    // CONFIG1: bit7=1 fixed, bits4:3=10 fixed -> base 0x90
+    uint8_t config1 = 0x90;
+    if (settings.device.nDaisyChain) config1 |= 0x40; // DAISY_EN=1
+    if (settings.device.clkEn)            config1 |= 0x20;
+    switch (settings.device.samplingRate) {
+        case 16000: config1 |= 0x00; break;
+        case 8000:  config1 |= 0x01; break;
+        case 4000:  config1 |= 0x02; break;
+        case 2000:  config1 |= 0x03; break;
+        case 1000:  config1 |= 0x04; break;
+        case 500:   config1 |= 0x05; break;
+        case 250:
+        default:    config1 |= 0x06; break;
+    }
+    ret = writeRegister(REG_CONFIG1, config1);
+    if (ret) return ret;
+
+    // CONFIG2: bits7:6=11 fixed -> base 0xC0
+    uint8_t config2 = 0xC0;
+    if (settings.device.intCal) config2 |= 0x10;
+    if (settings.device.calAmp) config2 |= 0x04;
+    config2 |= (settings.device.calFreq & 0x03);
+    ret = writeRegister(REG_CONFIG2, config2);
+    if (ret) return ret;
+
+    // CONFIG3: bits6:5=11 fixed -> base 0x60
+    uint8_t config3 = 0x60;
+    if (settings.device.nPdRefBuf)     config3 |= 0x80;
+    if (settings.device.biasMeas)     config3 |= 0x10;
+    if (settings.device.biasRefInt)   config3 |= 0x08;
+    if (settings.device.pdBias)       config3 |= 0x04;
+    if (settings.device.biasLoffSens) config3 |= 0x02;
+    ret = writeRegister(REG_CONFIG3, config3);
+    if (ret) return ret;
+
+    // LOFF
+    uint8_t loff = (uint8_t)((settings.device.compThreshold & 0x07) << 5) |
+                   (uint8_t)((settings.device.iLeadOff      & 0x03) << 2) |
+                   (uint8_t)(settings.device.fLeadOff       & 0x03);
+    ret = writeRegister(REG_LOFF, loff);
+    if (ret) return ret;
+
+    ret = writeRegister(REG_BIAS_SENSP, settings.device.biasSensP);
+    if (ret) return ret;
+    ret = writeRegister(REG_BIAS_SENSN, settings.device.biasSensN);
+    if (ret) return ret;
+    ret = writeRegister(REG_LOFF_SENSP, settings.device.loffSensP);
+    if (ret) return ret;
+    ret = writeRegister(REG_LOFF_SENSN, settings.device.loffSensN);
+    if (ret) return ret;
+    ret = writeRegister(REG_LOFF_FLIP, settings.device.loffFlip);
+    if (ret) return ret;
+    ret = writeRegister(REG_GPIO, settings.device.gpio);
+    if (ret) return ret;
+    ret = writeRegister(REG_MISC1, settings.device.srb1 ? 0x20 : 0x00);
+    if (ret) return ret;
+
+    uint8_t config4 = 0x00;
+    if (settings.device.singleShot) config4 |= 0x04;
+    if (settings.device.pdLoffComp) config4 |= 0x02;
+    ret = writeRegister(REG_CONFIG4, config4);
+    if (ret) return ret;
+
+    // Per-channel: build all 8 CHnSET bytes and burst-write in one WREG
+    uint8_t chset[ADS_NUM_CHANNELS];
+    for (int i = 0; i < ADS_NUM_CHANNELS; i++) {
+        uint8_t v = 0;
+        if (settings.channel[i].powerDown) v |= 0x80;
+        switch (settings.channel[i].gain) {
+            case 1:  v |= 0x00; break;
+            case 2:  v |= 0x10; break;
+            case 4:  v |= 0x20; break;
+            case 6:  v |= 0x30; break;
+            case 8:  v |= 0x40; break;
+            case 12: v |= 0x50; break;
+            case 24:
+            default: v |= 0x60; break;
+        }
+        if (settings.channel[i].srb2) v |= 0x04;
+        v |= (settings.channel[i].mux & 0x07);
+        chset[i] = v;
+    }
+    ret = writeRegisters(REG_CH1SET, chset, ADS_NUM_CHANNELS);
+    if (ret) return ret;
+
+    k_sleep(K_MSEC(2));
+    printk("ADS1299 configured (mux[0]=%u, gain[0]=%u, intCal=%u)\n",
+           settings.channel[0].mux, settings.channel[0].gain, settings.device.intCal);
+    return 0;
 }
 
 int ADS1299::spiWriteBytes(const uint8_t *data, size_t len)
@@ -230,161 +336,6 @@ int ADS1299::dumpTestRegisters()
         printk("REG 0x%02X = 0x%02X\n", regs[i], v);
     }
 
-    return 0;
-}
-
-int ADS1299::configureExternalInputsAll()
-{
-    int ret;
-
-    /* Stop continuous data mode and conversions before writing registers */
-    ret = stopContinuousRead();
-    if (ret) {
-        return ret;
-    }
-
-    ret = stopConversions();
-    if (ret) {
-        return ret;
-    }
-
-    /* CONFIG1 = 0x96: 250 SPS, DAISY disabled, internal clock (same as you had) */
-    ret = writeRegister(REG_CONFIG1, 0x96);
-    if (ret) {
-        return ret;
-    }
-
-    /* CONFIG2 = 0xC0: INT_CAL=0 -> internal test signals disabled [8] */
-    ret = writeRegister(REG_CONFIG2, 0xC0);
-    if (ret) {
-        return ret;
-    }
-
-    /* CONFIG3 = 0xE0: PD_REFBUF=1 (enable internal reference buffer) [5] */
-    ret = writeRegister(REG_CONFIG3, 0xE0);
-    if (ret) {
-        return ret;
-    }
-
-    /* MISC1 = 0x20: SRB1=1 This bit connects the SRB1 to all 4, 6, or 8 channels inverting
-    inputs */
-    ret = writeRegister(REG_MISC1, 0x20);
-    if (ret) {
-        return ret;
-    }
-
-    /*
-     * CHnSET = 0x60:
-     *   PDn = 0 (powered), GAIN = 110 (x24), SRB2 = 0, MUX = 000 (normal electrode input) [9].
-     *   Do this for all eight channels.
-     */
-    const uint8_t chset_all[ADS_NUM_CHANNELS] = {
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-    };
-    ret = writeRegisters(REG_CH1SET, chset_all, sizeof(chset_all));
-    if (ret) {
-        return ret;
-    }
-
-    k_sleep(K_MSEC(2));
-    printk("ADS1299 external input mode registers written\n");
-    return 0;
-}
-
-int ADS1299::configureInternalTestSignal()
-{
-    int ret;
-
-    /*
-     * CHnSET = 0x05:
-     *   PDn = 0     : channel powered up
-     *   GAINn = 000 : PGA gain 1
-     *   SRB2 = 0
-     *   MUXn = 101  : internal test signal
-     *
-     * CHnSET[2:0] = 101 selects the internally generated test signals [12], [19].
-     */
-    const uint8_t chset_all[ADS_NUM_CHANNELS] = {
-        0x05, 0x05, 0x05, 0x05,
-        0x05, 0x05, 0x05, 0x05,
-    };
-
-    const uint8_t chset_selected[ADS_NUM_CHANNELS] = {
-        0x05, 0x81, 0x81, 0x81,
-        0x81, 0x81, 0x81, 0x81,
-    };
-
-    printk("Configuring ADS1299 internal test signal mode...\n");
-
-    /*
-     * Stop continuous data mode before writing registers. RDATAC is the
-     * default after power-up and is cancelled with SDATAC [25].
-     */
-    ret = sendCommand(CMD_SDATAC);
-    if (ret) {
-        return ret;
-    }
-    k_sleep(K_MSEC(2));
-
-    /*
-     * Optional but clean: stop conversions while configuring.
-     */
-    ret = sendCommand(CMD_STOP);
-    if (ret) {
-        return ret;
-    }
-    k_sleep(K_MSEC(2));
-
-    /*
-    * CONFIG1 = 0x96:
-    *   bit7 = 1 reserved
-    *   DAISY_EN = 0 -> daisy-chain mode according to datasheet table
-    *   CLK_EN = 0 -> do not output internal oscillator
-    *   bits4:3 = 10 reserved
-    *   DR[2:0] = 110 -> 250 SPS
-    */
-    ret = writeRegister(REG_CONFIG1, 0x96);
-    if (ret) {
-        return ret;
-    }
-
-    /*
-     * CONFIG2 = 0xD0:
-     *   INT_CAL = 1 -> internally generated test signal
-     *   CAL_AMP = 0 -> 1x test amplitude
-     *   CAL_FREQ = 00 -> fCLK / 2^21 pulsed signal [13], [28].
-     */
-    ret = writeRegister(REG_CONFIG2, 0xD0);
-    if (ret) {
-        return ret;
-    }
-
-    /*
-     * CONFIG3 = 0xE0:
-     *   PD_REFBUF = 1 -> enable internal reference buffer
-     *   reserved bits6:5 = 11
-     *   BIASREF_INT = 0 in strict bit decoding for 0xE0.
-     *
-     * Note: the user-requested value is 0xE0. In the ADS1299 register map,
-     * BIASREF_INT is bit 3, so setting BIASREF_INT = 1 would make this 0xE8
-     * if no other bits change [21], [28]. The datasheet's test-signal flow
-     * explicitly shows WREG CONFIG3 E0h when using the internal reference [6],
-     * so this code writes 0xE0 as requested.
-     */
-    ret = writeRegister(REG_CONFIG3, 0xE0);
-    if (ret) {
-        return ret;
-    }
-
-    ret = writeRegisters(REG_CH1SET, chset_selected, sizeof(chset_selected));
-    if (ret) {
-        return ret;
-    }
-
-    k_sleep(K_MSEC(2));
-
-    printk("ADS1299 internal test signal registers written\n");
     return 0;
 }
 

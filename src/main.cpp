@@ -192,20 +192,11 @@ int main(void)
     }
 
      
-    ret = ads.configureExternalInputsAll();
+    ret = ads.configure();
     if (ret) {
-        printk("ADS external input configuration failed: %d\n", ret);
+        printk("ADS configuration failed: %d\n", ret);
         return 0;
     } 
-    
-
-    /*
-    ret = ads.configureInternalTestSignal();
-    if (ret) {
-        printk("ADS test signal configuration failed: %d\n", ret);
-        return 0;
-    } 
-    */ 
 
     /*
      * Dump registers before RDATAC. Register access should be done outside

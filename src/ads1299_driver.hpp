@@ -24,6 +24,50 @@
 
 #include "ads1299_definitions.h"
 
+struct ADS1299ChannelSettings {
+    uint8_t powerDown   = 0;   // PDn: 0 = powered on, 1 = powered down
+    uint8_t gain        = 1;  // PGA gain: 1,2,4,6,8,12,24
+    uint8_t srb2        = 0;   // 1 = connect channel N's SRB2 switch (needed for reference-electrode-free bias/ref schemes)
+    uint8_t mux         = 0;   // 0=normal electrode,1=shorted,2=bias meas,3=MVDD,4=temp,5=test signal,6=BIAS_DRP,7=BIAS_DRN
+};
+
+struct ADS1299DeviceSettings {
+    uint16_t samplingRate   = 250; // SPS: 250,500,1000,2000,4000,8000,16000
+    uint8_t  nDaisyChain    = 0;   // DAISY_EN: 0 = daisy-chain mode (what the dual-ADS1299 setup needs), 1 = multiple readback mode
+    uint8_t  clkEn          = 0;   // 1 = output internal osc on CLK pin
+
+    uint8_t  intCal     = 1;   // CONFIG2: 1 = internal test signal enabled
+    uint8_t  calAmp     = 1;   // 0 = 1x test amplitude, 1 = 2x
+    uint8_t  calFreq    = 1;   // 0 = fCLK/2^21 pulsed, 1 = fCLK/2^20 pulsed, 3 = dc
+
+    uint8_t  nPdRefBuf      = 1;  // CONFIG3: 1 = enable internal reference buffer
+    uint8_t  biasMeas       = 0;
+    uint8_t  biasRefInt     = 1;  // 1 = BIASREF = (AVDD+AVSS)/2 generated internally, 0 externally
+    uint8_t  pdBias         = 1;  // 1 = BIAS buffer enabled
+    uint8_t  biasLoffSens   = 0;
+
+    uint8_t  compThreshold  = 0; // LOFF comparator threshold, 0-7
+    uint8_t  iLeadOff       = 0; // lead-off current magnitude, 0-3
+    uint8_t  fLeadOff       = 0; // lead-off frequency, 0-3
+
+    uint8_t  biasSensP  = 0x01;  // per-channel bitmask, ch1=bit0..ch8=bit7
+    uint8_t  biasSensN  = 0x00;
+    uint8_t  loffSensP  = 0x00;
+    uint8_t  loffSensN  = 0x00;
+    uint8_t  loffFlip   = 0x00;
+
+    uint8_t  gpio   = 0x0F;
+    uint8_t  srb1   = 1;          // MISC1: 1 = connect SRB1 to all inverting inputs
+
+    uint8_t  singleShot = 0;   // CONFIG4
+    uint8_t  pdLoffComp = 0;
+};
+
+struct ADS1299Settings {
+    ADS1299DeviceSettings  device;
+    ADS1299ChannelSettings channel[ADS_NUM_CHANNELS];
+};
+
 class ADS1299 {
 public:
     /**
@@ -40,11 +84,14 @@ public:
      * @return int 
      */
     int init(uint8_t *id_out);
-
-    /* configuration */
+    
+    /**
+     * @brief configures ads registers
+     * 
+     * @return int 
+     */
+    int configure();
     int dumpTestRegisters();
-    int configureExternalInputsAll();
-    int configureInternalTestSignal();
 
     /* streaming */
     int stopContinuousRead();
@@ -75,4 +122,6 @@ private:
 
     struct spi_dt_spec spi_;
     struct gpio_dt_spec reset_gpio_;
+
+    ADS1299Settings settings;   // public, or add a reference-returning accessor if you prefer encapsulation
 };
