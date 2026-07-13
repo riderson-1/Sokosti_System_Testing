@@ -57,7 +57,7 @@ int ADS1299::configure()
     if (settings.device.nPdRefBuf)     config3 |= 0x80;
     if (settings.device.biasMeas)     config3 |= 0x10;
     if (settings.device.biasRefInt)   config3 |= 0x08;
-    if (settings.device.pdBias)       config3 |= 0x04;
+    if (settings.device.nPdBias)       config3 |= 0x04;
     if (settings.device.biasLoffSens) config3 |= 0x02;
     ret = writeRegister(REG_CONFIG3, config3);
     if (ret) return ret;
@@ -86,7 +86,7 @@ int ADS1299::configure()
 
     uint8_t config4 = 0x00;
     if (settings.device.singleShot) config4 |= 0x04;
-    if (settings.device.pdLoffComp) config4 |= 0x02;
+    if (settings.device.nPdLoffComp) config4 |= 0x02;
     ret = writeRegister(REG_CONFIG4, config4);
     if (ret) return ret;
 
