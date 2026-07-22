@@ -43,7 +43,7 @@ struct ADS1299DeviceSettings {
     uint8_t  nPdRefBuf      = 1;    // CONFIG3: 1 = enable internal reference buffer
     uint8_t  biasMeas       = 0;    // diagnostic only; routes BIAS_IN back into a channel for measurement
     uint8_t  biasRefInt     = 1;    // 1 = BIASREF = (AVDD+AVSS)/2 generated internally, 0 externally
-    uint8_t  nPdBias        = 0;    // 1 = BIAS buffer enabled, set to 0 to disable bias output
+    uint8_t  nPdBias        = 0;    // 1 = BIAS buffer enabled, 0 = disable bias electrode output
     uint8_t  biasLoffSens   = 0;    // bias lead off detection
 
     uint8_t  compThreshold  = 0;    // LOFF comparator threshold, 0-7

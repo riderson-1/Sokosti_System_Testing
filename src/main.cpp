@@ -227,7 +227,7 @@ int main(void)
     }
 
      
-    ret = setup_ads(AdsPreset::SingleChannelTest);
+    ret = setup_ads(AdsPreset::AllChannelsMeasurement);
 
     /*
      * Dump registers before RDATAC. Register access should be done outside

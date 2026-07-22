@@ -28,7 +28,28 @@ static ADS1299Settings SingleChannelTest()
     }
     
     cfg.device.samplingRate = 1000;
-    cfg.device.nPdRefBuf = 1;
+    cfg.device.nPdBias = 1;
+
+    return cfg;
+}
+
+static ADS1299Settings AllChannelsMeasurement()
+{
+    ADS1299Settings cfg;
+    
+    for (size_t i = 0; i < ADS_NUM_CHANNELS; i++)
+    {
+        cfg.channel[i].powerDown = 0;
+        cfg.channel[i].gain = 8;
+        cfg.channel[i].mux = 0;
+        cfg.channel[i].srb2 = 0;
+        
+    }
+    
+    cfg.device.samplingRate = 1000;
+    cfg.device.nPdBias = 1;
+
+
 
     return cfg;
 }
@@ -38,6 +59,7 @@ ADS1299Settings makeAdsSettings(AdsPreset preset)
     switch (preset) {
         case AdsPreset::DefaultSettings:    return DefaultSettings();
         case AdsPreset::SingleChannelTest:  return SingleChannelTest();
+        case AdsPreset::AllChannelsMeasurement: return AllChannelsMeasurement();
     }
     return DefaultSettings();  // unreachable, keeps compiler happy without -Wswitch complaints masking a real bug
 }
