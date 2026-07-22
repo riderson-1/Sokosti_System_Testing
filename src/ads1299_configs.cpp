@@ -22,9 +22,9 @@ static ADS1299Settings SingleChannelTest()
     cfg.channel[0].srb2 = 0;
     
     
-    for (size_t i = 1; i < 16; i++)
+    for (size_t i = 1; i < ADS_NUM_CHANNELS; i++)
     {
-        cfg.channel[1].powerDown = 1;
+        cfg.channel[i].powerDown = 1;
     }
     
     cfg.device.samplingRate = 1000;

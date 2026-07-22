@@ -18,7 +18,7 @@ ADS1299::ADS1299(const struct spi_dt_spec &spi, const struct gpio_dt_spec &reset
 int ADS1299::configure(const ADS1299Settings &cfg)
 {
     int ret;
-    
+
     //copy callers config
     settings = cfg; 
 
@@ -220,36 +220,22 @@ int ADS1299::writeRegisters(uint8_t start_reg, const uint8_t *values, size_t cou
     k_busy_wait(10);
     return ret;
 }
-
-int32_t ADS1299::decode24(const uint8_t *p)
-{
-    int32_t v = ((int32_t)p[0] << 16) |
-                ((int32_t)p[1] << 8)  |
-                ((int32_t)p[2]);
-
-    if (v & 0x800000) {
-        v |= (int32_t)0xFF000000;
-    }
-
-    return v;
-}
-
 /*
  * In RDATAC mode, after DRDY goes low, clock out:
  * 24 status bits + 24 bits per channel.
  * For 8 channels this is 27 bytes total [22], [23].
  */
-int ADS1299::readFrameRdatac(uint8_t frame[ADS_FRAME_BYTES])
+int ADS1299::readFrameRdatac(uint8_t frame[ADS_DAISY_FRAME_BYTES])
 {
-    uint8_t tx[ADS_FRAME_BYTES] = { 0 };
-    uint8_t rx[ADS_FRAME_BYTES] = { 0 };
+    uint8_t tx[ADS_DAISY_FRAME_BYTES] = { 0 };
+    uint8_t rx[ADS_DAISY_FRAME_BYTES] = { 0 };
 
     int ret = spiTransceiveBytes(tx, rx, sizeof(tx));
     if (ret) {
         return ret;
     }
 
-    memcpy(frame, rx, ADS_FRAME_BYTES);
+    memcpy(frame, rx, ADS_DAISY_FRAME_BYTES);
     return 0;
 }
 

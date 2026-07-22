@@ -18,11 +18,21 @@
 #include <stddef.h>
 #include <stdio.h>
 
-
 #include "ads1299_definitions.h"
 #include "ads1299_driver.hpp"
 #include "usb_cdc.hpp"
 #include "ads1299_configs.hpp"
+
+#pragma pack(push, 1)
+struct SamplePacket {
+    uint8_t  sync[2];      // 0xAA 0x55 — resync marker for the host parser
+    uint32_t sample_idx;
+    uint8_t  status1_ok;
+    uint8_t  status2_ok;
+    uint8_t  ch_data[48];  // 16 channels * 3 bytes raw, unmodified 24-bit values
+    uint8_t  checksum;     // simple XOR or sum, so host can detect a corrupted packet
+};
+#pragma pack(pop)
 
 #define ADS_NODE        DT_NODELABEL(ads1299)
 #define LED_NODE        DT_ALIAS(led0)
@@ -58,6 +68,19 @@ static ADS1299 ads(ads_spi, reset_pin);
 
 static K_SEM_DEFINE(drdy_sem, 0, 1);
 static struct gpio_callback drdy_cb_data;
+
+constexpr size_t BATCH_SIZE = 8;
+
+static SamplePacket batch[BATCH_SIZE];
+
+static size_t batch_count = 0;
+
+static uint8_t computeChecksum(const SamplePacket &p) {
+    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&p);
+    uint8_t sum = 0;
+    for (size_t i = 0; i < sizeof(SamplePacket) - 1; i++) sum ^= bytes[i]; // exclude checksum field itself
+    return sum;
+}
 
 static void drdy_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
@@ -148,7 +171,7 @@ int main(void)
 {
     int ret;
     uint8_t id = 0;
-    uint8_t frame[ADS_FRAME_BYTES];
+    uint8_t frame[ADS_DAISY_FRAME_BYTES];
     uint32_t sample_idx = 0;
 
     // ---------------------------------------
@@ -232,14 +255,6 @@ int main(void)
     // main loop
     // ---------------------------------------
 
-    /* Send once, before entering the loop */
-    static const char hdr[] =
-    "sample,status1_ok,status2_ok,"
-    "ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8,"
-    "ch9,ch10,ch11,ch12,ch13,ch14,ch15,ch16\r\n";
-
-    usb_cdc::print(hdr, sizeof(hdr) - 1);
-
     while (1) {
         k_sem_take(&drdy_sem, K_FOREVER);
         
@@ -266,43 +281,21 @@ int main(void)
             continue;
         }
 
-        // Device 1 (logical channels 1–8)
-        bool status1_ok = ((frame[0] & 0xF0) == 0xC0);   // was frame[1]
-        int32_t ch1  = ADS1299::decode24(&frame[3]);
-        int32_t ch2  = ADS1299::decode24(&frame[6]);
-        int32_t ch3  = ADS1299::decode24(&frame[9]);
-        int32_t ch4  = ADS1299::decode24(&frame[12]);
-        int32_t ch5  = ADS1299::decode24(&frame[15]);
-        int32_t ch6  = ADS1299::decode24(&frame[18]);
-        int32_t ch7  = ADS1299::decode24(&frame[21]);
-        int32_t ch8  = ADS1299::decode24(&frame[24]);
+        SamplePacket &pkt = batch[batch_count];
+        pkt.sync[0] = 0xAA;
+        pkt.sync[1] = 0x55;
+        pkt.sample_idx  = sample_idx;
+        pkt.status1_ok  = ((frame[0] & 0xF0) == 0xC0) ? 1 : 0;
+        pkt.status2_ok  = ((frame[27] & 0xF0) == 0xC0) ? 1 : 0;
+        memcpy(pkt.ch_data,      &frame[3],  24);   // device 1, 8 ch * 3 bytes
+        memcpy(pkt.ch_data + 24, &frame[30], 24);   // device 2, 8 ch * 3 bytes
+        pkt.checksum = computeChecksum(pkt);
 
-        // Device 2 (logical channels 9–16)
-        bool status2_ok = ((frame[27] & 0xF0) == 0xC0);  // was frame[12] — that was actually inside device 1's ch4!
-        int32_t ch9  = ADS1299::decode24(&frame[30]);
-        int32_t ch10 = ADS1299::decode24(&frame[33]);
-        int32_t ch11 = ADS1299::decode24(&frame[36]);
-        int32_t ch12 = ADS1299::decode24(&frame[39]);
-        int32_t ch13 = ADS1299::decode24(&frame[42]);
-        int32_t ch14 = ADS1299::decode24(&frame[45]);
-        int32_t ch15 = ADS1299::decode24(&frame[48]);
-        int32_t ch16 = ADS1299::decode24(&frame[51]);
+        batch_count++;
 
-        char msg[192];
-        int len = snprintf(msg, sizeof(msg),
-            "%lu,%d,%d,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
-            (unsigned long)sample_idx,
-            status1_ok ? 1 : 0,
-            status2_ok ? 1 : 0,
-            (long)ch1,  (long)ch2,  (long)ch3,  (long)ch4,
-            (long)ch5,  (long)ch6,  (long)ch7,  (long)ch8,
-            (long)ch9,  (long)ch10, (long)ch11, (long)ch12,
-            (long)ch13, (long)ch14, (long)ch15, (long)ch16);
-
-        if (len > 0 && len < static_cast<int>(sizeof(msg))) {
-            usb_cdc::print(msg, len);
-        } else {
-            printk("CSV message truncated: len=%d\n", len);
+        if (batch_count == BATCH_SIZE) {
+            usb_cdc::print(reinterpret_cast<const char *>(batch), sizeof(batch));
+            batch_count = 0;
         }
 
         if ((sample_idx % 250U) == 0U) {

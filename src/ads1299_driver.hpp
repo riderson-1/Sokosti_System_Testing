@@ -101,10 +101,7 @@ public:
     int startContinuousRead();
 
     // ---- Data acquisition (RDATAC mode) ----
-    int readFrameRdatac(uint8_t frame[ADS_FRAME_BYTES]);
-
-    // ---- Utility ----
-    static int32_t decode24(const uint8_t *p);
+    int readFrameRdatac(uint8_t frame[ADS_DAISY_FRAME_BYTES]);
 
 private:
     
