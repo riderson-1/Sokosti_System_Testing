@@ -15,9 +15,12 @@ ADS1299::ADS1299(const struct spi_dt_spec &spi, const struct gpio_dt_spec &reset
     }
 }
 
-int ADS1299::configure()
+int ADS1299::configure(const ADS1299Settings &cfg)
 {
     int ret;
+    
+    //copy callers config
+    settings = cfg; 
 
     ret = sendCommand(CMD_SDATAC);
     if (ret) return ret;

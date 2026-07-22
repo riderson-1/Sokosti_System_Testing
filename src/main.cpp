@@ -22,6 +22,7 @@
 #include "ads1299_definitions.h"
 #include "ads1299_driver.hpp"
 #include "usb_cdc.hpp"
+#include "ads1299_configs.hpp"
 
 #define ADS_NODE        DT_NODELABEL(ads1299)
 #define LED_NODE        DT_ALIAS(led0)
@@ -132,6 +133,17 @@ static int setup_gpios(void)
     return 0;
 }
 
+static int setup_ads(AdsPreset preset)
+{
+    ADS1299Settings cfg = makeAdsSettings(preset);
+    
+    int ret = ads.configure(cfg);
+    if (ret) {
+        printk("ADS configuration failed: %d\n", ret);
+    }
+    return ret;
+}
+
 int main(void)
 {
     int ret;
@@ -192,11 +204,7 @@ int main(void)
     }
 
      
-    ret = ads.configure();
-    if (ret) {
-        printk("ADS configuration failed: %d\n", ret);
-        return 0;
-    } 
+    ret = setup_ads(AdsPreset::SingleChannelTest);
 
     /*
      * Dump registers before RDATAC. Register access should be done outside
