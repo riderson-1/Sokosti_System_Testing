@@ -15,5 +15,6 @@ target_sources(app PRIVATE
     src/usb_cdc.cpp
     src/ads1299_driver.cpp
     src/sample_usbd_init.c
+    src/ads1299_configs.cpp
 )
 # NORDIC SDK APP END

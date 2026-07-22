@@ -39,5 +39,5 @@ ADS1299Settings makeAdsSettings(AdsPreset preset)
         case AdsPreset::DefaultSettings:    return DefaultSettings();
         case AdsPreset::SingleChannelTest:  return SingleChannelTest();
     }
-    return defaultSettings();  // unreachable, keeps compiler happy without -Wswitch complaints masking a real bug
+    return DefaultSettings();  // unreachable, keeps compiler happy without -Wswitch complaints masking a real bug
 }
