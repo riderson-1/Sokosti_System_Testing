@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug nRF5340 DK app core",
+      "type": "nrf-connect",
+      "request": "launch",
+      "config": "${activeConfig}",
+      "runToEntryPoint": "main",
+      "gdbServer": {
+        "args": {
+          "if": "SWD",
+          "speed": 4000,
+          "device": "nRF5340_xxAA_APP",
+          "select": "USB=1050062178",
+        }
+      },
+      "flash": false
+    }
+  ]
+}
