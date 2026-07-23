@@ -7,6 +7,8 @@
 
 #include "ads1299_driver.hpp"
 
+LOG_MODULE_REGISTER(ads1299_driver, LOG_LEVEL_DBG);
+
 ADS1299::ADS1299(const struct spi_dt_spec &spi, const struct gpio_dt_spec &reset_gpio)
     : spi_(spi), reset_gpio_(reset_gpio)
 {
@@ -108,7 +110,7 @@ int ADS1299::configure(const ADS1299Settings &cfg)
             case 24:
             default: v |= 0x60; break;
         }
-        if (settings.channel[i].srb2) v |= 0x04;
+        if (settings.channel[i].srb2) v |= 0x08;
         v |= (settings.channel[i].mux & 0x07);
         chset[i] = v;
     }
@@ -176,25 +178,19 @@ int ADS1299::sendCommand(uint8_t cmd)
 
 int ADS1299::readRegister(uint8_t reg, uint8_t *value)
 {
-    uint8_t tx[4] = {
-        (uint8_t)(CMD_RREG | reg),
-        0x00,
-        0x00,
-    };
-    uint8_t rx[4] = { 0 };
-
+    uint8_t tx[3] = { (uint8_t)(CMD_RREG | reg), 0x00, 0x00 };
+    uint8_t rx[3] = { 0 };
     int ret = spiTransceiveBytes(tx, rx, sizeof(tx));
     if (ret == 0) {
-        *value = rx[3];
+        *value = rx[2];
     }
-
     return ret;
 }
 
 int ADS1299::writeRegister(uint8_t reg, uint8_t value)
 {
-    uint8_t tx[4] = {
-        (uint8_t)(CMD_WREG | reg),
+    uint8_t tx[3] = {
+        static_cast<uint8_t>(CMD_WREG | reg),
         0x00,
         value,
     };
@@ -269,7 +265,7 @@ int ADS1299::init(uint8_t *id_out)
     k_sleep(K_MSEC(10));
 
     // 4. send SDATAC
-    stopContinuousRead();
+    ret = stopContinuousRead();
     if (ret) {
         printk("ADS1299: SDATAC failed: %d\n", ret);
         return ret;
@@ -279,17 +275,19 @@ int ADS1299::init(uint8_t *id_out)
     ret = readRegister(REG_ID, &id);
     if (ret != 0) {
         printk("ADS1299: ID register read failed\n");
-        return false;
+        return ret;
     }
     
     // 6. validate device
     /* ADS1299 family ID: lower 5 bits should read 0x1E (Datasheet, REG_ID) */
     if ((id & 0x1F) != 0x1E) {
         printk("ADS1299: unexpected ID 0x%02X (expected low 5 bits = 0x1E)\n", id);
-        return false;
+        return -ENODEV;
     }
 
-    printk("ADS1299 detected, ID = 0x%02X\n", id);
+    LOG_INF("ADS1299 detected, ID = 0x%02X\n", id);
+
+    *id_out = id;
 
     // 7. Leave ADS in SDATAC so registers can be configured
     return 0;
@@ -298,32 +296,34 @@ int ADS1299::init(uint8_t *id_out)
 int ADS1299::dumpTestRegisters()
 {
     int ret;
-    uint8_t v;
+    uint8_t regs[0x18];
 
-    const uint8_t regs[] = {
-        REG_ID,
-        REG_CONFIG1,
-        REG_CONFIG2,
-        REG_CONFIG3,
-        REG_CH1SET,
-        REG_CH2SET,
-        REG_CH3SET,
-        REG_CH4SET,
-        REG_CH5SET,
-        REG_CH6SET,
-        REG_CH7SET,
-        REG_CH8SET,
-    };
-
-    for (size_t i = 0; i < sizeof(regs); i++) {
-        ret = readRegister(regs[i], &v);
+    for (uint8_t addr = 0x00; addr <= 0x17; addr++) {
+        ret = readRegister(addr, &regs[addr]);
         if (ret) {
-            printk("REG 0x%02X read failed: %d\n", regs[i], ret);
+            LOG_ERR("REG 0x%02X read failed: %d", addr, ret);
             return ret;
         }
-
-        printk("REG 0x%02X = 0x%02X\n", regs[i], v);
+        k_msleep(2);
     }
+
+    LOG_INF("ADS regs 00-07: %02X %02X %02X %02X %02X %02X %02X %02X",
+            regs[0x00], regs[0x01], regs[0x02], regs[0x03],
+            regs[0x04], regs[0x05], regs[0x06], regs[0x07]);
+
+    k_msleep(50);
+
+    LOG_INF("ADS regs 08-0F: %02X %02X %02X %02X %02X %02X %02X %02X",
+            regs[0x08], regs[0x09], regs[0x0A], regs[0x0B],
+            regs[0x0C], regs[0x0D], regs[0x0E], regs[0x0F]);
+
+    k_msleep(50);
+
+    LOG_INF("ADS regs 10-17: %02X %02X %02X %02X %02X %02X %02X %02X",
+            regs[0x10], regs[0x11], regs[0x12], regs[0x13],
+            regs[0x14], regs[0x15], regs[0x16], regs[0x17]);
+
+    k_msleep(50);
 
     return 0;
 }
@@ -375,4 +375,17 @@ int ADS1299::stopConversions()
 
     k_sleep(K_MSEC(2));
     return 0;
+}
+
+int32_t ADS1299::decode24(const uint8_t *p)
+{
+    int32_t v = ((int32_t)p[0] << 16) |
+                ((int32_t)p[1] << 8)  |
+                ((int32_t)p[2]);
+
+    if (v & 0x800000) {
+        v |= (int32_t)0xFF000000;
+    }
+
+    return v;
 }

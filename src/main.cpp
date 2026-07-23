@@ -12,6 +12,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/logging/log.h>
 
 #include <errno.h>
 #include <stdint.h>
@@ -74,6 +75,8 @@ constexpr size_t BATCH_SIZE = 8;
 static SamplePacket batch[BATCH_SIZE];
 
 static size_t batch_count = 0;
+
+LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);  // module name, default log level
 
 static uint8_t computeChecksum(const SamplePacket &p) {
     const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&p);
@@ -239,13 +242,13 @@ int main(void)
         return 0;
     }
 
-    ads.startContinuousRead();
+    ret = ads.startContinuousRead();
     if (ret) {
         printk("ADS RDATAC failed: %d\n", ret);
         return 0;
     }
 
-    ads.startConversions();
+    ret = ads.startConversions();
     if (ret) {
         printk("ADS START failed: %d\n", ret);
         return 0;
@@ -301,6 +304,11 @@ int main(void)
         if ((sample_idx % 250U) == 0U) {
             gpio_pin_toggle_dt(&led);
         }
+
+        // if ((sample_idx % 1000U) == 0U) {
+        //     int32_t raw_ch1 = ADS1299::decode24(&frame[3]);  // or reimplement inline if decode24 was removed
+        //     LOG_INF("raw_ch1=%ld\n", (long)raw_ch1);
+        // }
 
         sample_idx++;
     }

@@ -17,6 +17,7 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/logging/log.h>
 
 #include <errno.h>
 #include <stdint.h>
@@ -102,6 +103,9 @@ public:
 
     // ---- Data acquisition (RDATAC mode) ----
     int readFrameRdatac(uint8_t frame[ADS_DAISY_FRAME_BYTES]);
+
+    // Testing Utilities
+    static int32_t decode24(const uint8_t *p);
 
 private:
     
