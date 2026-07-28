@@ -305,10 +305,10 @@ int main(void)
             gpio_pin_toggle_dt(&led);
         }
 
-        // if ((sample_idx % 1000U) == 0U) {
-        //     int32_t raw_ch1 = ADS1299::decode24(&frame[3]);  // or reimplement inline if decode24 was removed
-        //     LOG_INF("raw_ch1=%ld\n", (long)raw_ch1);
-        // }
+        if ((sample_idx % 1000U) == 0U) {
+            int32_t raw_ch1 = ADS1299::decode24(&frame[3]);  // or reimplement inline if decode24 was removed
+            LOG_INF("raw_ch1=%ld\n", (long)raw_ch1);
+        }
 
         sample_idx++;
     }

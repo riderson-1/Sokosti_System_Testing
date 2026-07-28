@@ -180,7 +180,9 @@ int ADS1299::readRegister(uint8_t reg, uint8_t *value)
 {
     uint8_t tx[3] = { (uint8_t)(CMD_RREG | reg), 0x00, 0x00 };
     uint8_t rx[3] = { 0 };
+    printk("  readRegister: before transceive, reg=0x%02X\n", reg);
     int ret = spiTransceiveBytes(tx, rx, sizeof(tx));
+    printk("  readRegister: after transceive, ret=%d\n", ret);
     if (ret == 0) {
         *value = rx[2];
     }
@@ -299,27 +301,31 @@ int ADS1299::dumpTestRegisters()
     uint8_t regs[0x18];
 
     for (uint8_t addr = 0x00; addr <= 0x17; addr++) {
+        printk("about to read 0x%02X\n", addr);   // <-- breadcrumb
         ret = readRegister(addr, &regs[addr]);
+        printk("read 0x%02X = 0x%02X (ret=%d)\n", addr, regs[addr], ret);  // <-- breadcrumb
         if (ret) {
             LOG_ERR("REG 0x%02X read failed: %d", addr, ret);
             return ret;
         }
         k_msleep(2);
     }
+    printk("dump loop done\n");   // <-- breadcrumb
 
-    LOG_INF("ADS regs 00-07: %02X %02X %02X %02X %02X %02X %02X %02X",
+
+    LOG_ERR("ADS regs 00-07: %02X %02X %02X %02X %02X %02X %02X %02X",
             regs[0x00], regs[0x01], regs[0x02], regs[0x03],
             regs[0x04], regs[0x05], regs[0x06], regs[0x07]);
 
     k_msleep(50);
 
-    LOG_INF("ADS regs 08-0F: %02X %02X %02X %02X %02X %02X %02X %02X",
+    LOG_ERR("ADS regs 08-0F: %02X %02X %02X %02X %02X %02X %02X %02X",
             regs[0x08], regs[0x09], regs[0x0A], regs[0x0B],
             regs[0x0C], regs[0x0D], regs[0x0E], regs[0x0F]);
 
     k_msleep(50);
 
-    LOG_INF("ADS regs 10-17: %02X %02X %02X %02X %02X %02X %02X %02X",
+    LOG_ERR("ADS regs 10-17: %02X %02X %02X %02X %02X %02X %02X %02X",
             regs[0x10], regs[0x11], regs[0x12], regs[0x13],
             regs[0x14], regs[0x15], regs[0x16], regs[0x17]);
 
