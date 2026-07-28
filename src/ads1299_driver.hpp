@@ -94,6 +94,7 @@ public:
      */
     int configure(const ADS1299Settings &cfg);
     int dumpTestRegisters();
+    int dumpTestRegistersUsb();
 
     /* streaming */
     int stopContinuousRead();
@@ -120,6 +121,7 @@ private:
     int readRegister(uint8_t reg, uint8_t *value);
     int writeRegister(uint8_t reg, uint8_t value);
     int writeRegisters(uint8_t start_reg, const uint8_t *values, size_t count);
+    static const char* registerName(uint8_t addr);
 
 
     struct spi_dt_spec spi_;

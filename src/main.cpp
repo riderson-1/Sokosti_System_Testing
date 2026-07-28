@@ -241,6 +241,12 @@ int main(void)
         return 0;
     }
 
+    // ret = ads.dumpTestRegistersUsb();
+    // if (ret) {
+    //     LOG_ERR("ADS register dump failed: %d", ret);
+    //     return 0;
+    // }
+
     ret = ads.startContinuousRead();
     if (ret) {
         LOG_ERR("ADS RDATAC failed: %d", ret);

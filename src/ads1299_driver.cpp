@@ -6,6 +6,7 @@
  */
 
 #include "ads1299_driver.hpp"
+#include "usb_cdc.hpp"
 
 LOG_MODULE_REGISTER(ads1299_driver, LOG_LEVEL_DBG);
 
@@ -293,6 +294,37 @@ int ADS1299::init(uint8_t *id_out)
     return 0;
 }
 
+const char* ADS1299::registerName(uint8_t addr)
+{
+    switch (addr) {
+        case 0x00: return "ID";
+        case 0x01: return "CONFIG1";
+        case 0x02: return "CONFIG2";
+        case 0x03: return "CONFIG3";
+        case 0x04: return "LOFF";
+        case 0x05: return "CH1SET";
+        case 0x06: return "CH2SET";
+        case 0x07: return "CH3SET";
+        case 0x08: return "CH4SET";
+        case 0x09: return "CH5SET";
+        case 0x0A: return "CH6SET";
+        case 0x0B: return "CH7SET";
+        case 0x0C: return "CH8SET";
+        case 0x0D: return "BIAS_SENSP";
+        case 0x0E: return "BIAS_SENSN";
+        case 0x0F: return "LOFF_SENSP";
+        case 0x10: return "LOFF_SENSN";
+        case 0x11: return "LOFF_FLIP";
+        case 0x12: return "LOFF_STATP";
+        case 0x13: return "LOFF_STATN";
+        case 0x14: return "GPIO";
+        case 0x15: return "MISC1";
+        case 0x16: return "MISC2";
+        case 0x17: return "CONFIG4";
+        default:   return "UNKNOWN";
+    }
+}
+
 int ADS1299::dumpTestRegisters()
 {
     int ret;
@@ -307,23 +339,59 @@ int ADS1299::dumpTestRegisters()
         k_msleep(2);
     }
 
-    LOG_INF("ADS regs 00-07: %02X %02X %02X %02X %02X %02X %02X %02X",
-            regs[0x00], regs[0x01], regs[0x02], regs[0x03],
-            regs[0x04], regs[0x05], regs[0x06], regs[0x07]);
+    LOG_INF("ADS1299 Register Dump");
+    
+    for (uint8_t addr = 0x00; addr <= 0x17; addr++) {
+        LOG_INF("0x%02X  %-13s 0x%02X", addr, registerName(addr), regs[addr]);
+    }
 
-    k_msleep(50);
+    return 0;
+}
 
-    LOG_INF("ADS regs 08-0F: %02X %02X %02X %02X %02X %02X %02X %02X",
-            regs[0x08], regs[0x09], regs[0x0A], regs[0x0B],
-            regs[0x0C], regs[0x0D], regs[0x0E], regs[0x0F]);
+int ADS1299::dumpTestRegistersUsb()
+{
+    int ret;
+    uint8_t regs[0x18];
 
-    k_msleep(50);
+    for (uint8_t addr = 0x00; addr <= 0x17; addr++) {
+        ret = readRegister(addr, &regs[addr]);
+        if (ret) {
+            char errbuf[64];
+            int n = snprintf(errbuf, sizeof(errbuf),
+                              "REG 0x%02X read failed: %d\r\n", addr, ret);
+            if (n > 0) {
+                usb_cdc::print(errbuf, (n < (int)sizeof(errbuf)) ? n : sizeof(errbuf) - 1);
+            }
+            return ret;
+        }
+        k_msleep(2);
+    }
 
-    LOG_INF("ADS regs 10-17: %02X %02X %02X %02X %02X %02X %02X %02X",
-            regs[0x10], regs[0x11], regs[0x12], regs[0x13],
-            regs[0x14], regs[0x15], regs[0x16], regs[0x17]);
+    char line[96];
+    int n;
 
-    k_msleep(50);
+    n = snprintf(line, sizeof(line), "ADS1299 Register Dump:\r\n");
+    if (n > 0) {
+        usb_cdc::print(line, (n < (int)sizeof(line)) ? n : sizeof(line) - 1);
+    }
+
+    n = snprintf(line, sizeof(line), "ADDR  NAME          VALUE\r\n");
+    if (n > 0) {
+        usb_cdc::print(line, (n < (int)sizeof(line)) ? n : sizeof(line) - 1);
+    }
+
+    n = snprintf(line, sizeof(line), "----  ----------    ----\r\n");
+    if (n > 0) {
+        usb_cdc::print(line, (n < (int)sizeof(line)) ? n : sizeof(line) - 1);
+    }
+
+    for (uint8_t addr = 0x00; addr <= 0x17; addr++) {
+        n = snprintf(line, sizeof(line), "0x%02X  %-13s 0x%02X\r\n",
+                     addr, registerName(addr), regs[addr]);
+        if (n > 0) {
+            usb_cdc::print(line, (n < (int)sizeof(line)) ? n : sizeof(line) - 1);
+        }
+    }
 
     return 0;
 }

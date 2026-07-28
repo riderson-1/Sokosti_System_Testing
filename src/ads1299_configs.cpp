@@ -48,8 +48,13 @@ static ADS1299Settings AllChannelsMeasurement()
     }
     
     cfg.device.nDaisyChain = 0;
+    cfg.device.clkEn = 0;
+
     cfg.device.samplingRate = 1000;
     cfg.device.nPdBias = 1;
+    cfg.device.nPdRefBuf = 1;
+    cfg.device.biasRefInt = 1;
+
     cfg.device.intCal = 0;
 
     return cfg;
