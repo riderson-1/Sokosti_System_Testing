@@ -6,7 +6,6 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/sys/printk.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/gpio.h>
@@ -106,7 +105,7 @@ static int setup_drdy_interrupt(void)
 static int start_ads_pwm_clock(void)
 {
     if (!pwm_is_ready_dt(&ads_clk_pwm)) {
-        printk("ADS clock PWM not ready\n");
+        LOG_ERR("ADS clock PWM not ready");
         return -ENODEV;
     }
 
@@ -116,11 +115,11 @@ static int start_ads_pwm_clock(void)
      */
     int ret = pwm_set_dt(&ads_clk_pwm, PWM_NSEC(500), PWM_NSEC(250));
     if (ret) {
-        printk("PWM start failed: %d\n", ret);
+        LOG_ERR("PWM start failed: %d", ret);
         return ret;
     }
 
-    printk("ADS clock PWM started\n");
+    LOG_INF("ADS clock PWM started");
     return 0;
 }
 
@@ -132,7 +131,7 @@ static int setup_gpios(void)
         !gpio_is_ready_dt(&reset_pin) ||
         !gpio_is_ready_dt(&start_pin) ||
         !gpio_is_ready_dt(&drdy_pin)) {
-        printk("GPIO not ready\n");
+        LOG_ERR("GPIO not ready");
         return -ENODEV;
     }
 
@@ -165,7 +164,7 @@ static int setup_ads(AdsPreset preset)
     
     int ret = ads.configure(cfg);
     if (ret) {
-        printk("ADS configuration failed: %d\n", ret);
+        LOG_ERR("ADS configuration failed: %d", ret);
     }
     return ret;
 }
@@ -183,28 +182,28 @@ int main(void)
 
     ret = usb_cdc::init();
     if (ret != 0) {
-        printk("USB CDC init failed: %d\n", ret);
+        LOG_ERR("USB CDC init failed: %d", ret);
         return 0;
     }
 
     k_msleep(100);
     k_sleep(K_MSEC(500));
-    printk("ADS1299 internal test signal capture starting...\n");
+    LOG_INF("ADS1299 internal test signal capture starting...");
 
     if (!spi_is_ready_dt(&ads_spi)) {
-        printk("SPI device not ready\n");
+        LOG_ERR("SPI device not ready");
         return 0;
     }
 
     ret = setup_gpios();
     if (ret) {
-        printk("GPIO setup failed: %d\n", ret);
+        LOG_ERR("GPIO setup failed: %d", ret);
         return 0;
     }
 
     ret = setup_drdy_interrupt();
     if (ret) {
-        printk("DRDY interrupt setup failed: %d\n", ret);
+        LOG_ERR("DRDY interrupt setup failed: %d", ret);
         return 0;
     }
 
@@ -216,7 +215,7 @@ int main(void)
 
     ret = start_ads_pwm_clock();
     if (ret) {
-        printk("Warning: ADS clock not running: %d\n", ret);
+        LOG_ERR("Warning: ADS clock not running: %d", ret);
     }
 
     // ---------------------------------------
@@ -225,7 +224,7 @@ int main(void)
 
     ret = ads.init(&id);
     if (ret) {
-        printk("ADS1299 init failed: %d\n", ret);
+        LOG_ERR("ADS1299 init failed: %d", ret);
         return 0;
     }
 
@@ -238,19 +237,19 @@ int main(void)
      */
     ret = ads.dumpTestRegisters();
     if (ret) {
-        printk("ADS register dump failed: %d\n", ret);
+        LOG_ERR("ADS register dump failed: %d", ret);
         return 0;
     }
 
     ret = ads.startContinuousRead();
     if (ret) {
-        printk("ADS RDATAC failed: %d\n", ret);
+        LOG_ERR("ADS RDATAC failed: %d", ret);
         return 0;
     }
 
     ret = ads.startConversions();
     if (ret) {
-        printk("ADS START failed: %d\n", ret);
+        LOG_ERR("ADS START failed: %d", ret);
         return 0;
     }
 
@@ -279,7 +278,7 @@ int main(void)
 
         ret = ads.readFrameRdatac(frame);
         if (ret) {
-            printk("Frame read failed: %d\n", ret);
+            LOG_ERR("Frame read failed: %d", ret);
             gpio_pin_toggle_dt(&led);
             continue;
         }
@@ -303,11 +302,6 @@ int main(void)
 
         if ((sample_idx % 250U) == 0U) {
             gpio_pin_toggle_dt(&led);
-        }
-
-        if ((sample_idx % 1000U) == 0U) {
-            int32_t raw_ch1 = ADS1299::decode24(&frame[3]);  // or reimplement inline if decode24 was removed
-            LOG_INF("raw_ch1=%ld\n", (long)raw_ch1);
         }
 
         sample_idx++;
