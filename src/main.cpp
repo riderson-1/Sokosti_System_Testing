@@ -82,10 +82,14 @@ K_MSGQ_DEFINE(batch_queue, sizeof(SampleBatch), 4, 4);
 K_THREAD_STACK_DEFINE(acq_stack, 4096);
 K_THREAD_STACK_DEFINE(usb_stack, 4096);
 K_THREAD_STACK_DEFINE(led_stack, 4096);
+K_THREAD_STACK_DEFINE(log_stack, 4096);
 
 static struct k_thread acq_thread_data;
 static struct k_thread usb_thread_data;
 static struct k_thread led_thread_data;
+static struct k_thread log_thread_data;
+
+static int32_t last_ch1_code = 0;
 
 static uint8_t computeChecksum(const SamplePacket &p) {
     const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&p);
@@ -213,6 +217,8 @@ static void acquisition_thread(void *arg1, void *arg2, void *arg3)
             continue;
         }
 
+        last_ch1_code = ads.decode24(&frame[3]);  // ch1, device 1 for debugging
+
         SamplePacket &pkt = batch.samples[batch_count];
 
         pkt.sync[0] = 0xAA;      // ← FIXED
@@ -248,12 +254,20 @@ static void acquisition_thread(void *arg1, void *arg2, void *arg3)
 static void led_toggling(void *arg1, void *arg2, void *arg3)
 {
     while (true) {
-        k_sleep(K_MSEC(100));
+        k_sleep(K_MSEC(500));
         gpio_pin_toggle_dt(&led);
     }
 }
 
-
+static void live_log(void *arg1, void *arg2, void *arg3)
+{
+    while (true) {
+        k_sleep(K_MSEC(500));
+        int32_t ch1 = last_ch1_code;  // atomic read on Cortex-M33
+        LOG_INF("ch1 code = %d  (%.2f uV)", ch1,
+                (double)ch1 * 5.0 / 8.0 / 8388608.0 * 1e6);
+    }
+}
 
 int main(void)
 {
@@ -373,6 +387,17 @@ int main(void)
         led_toggling,
         NULL, NULL, NULL,
         5,          // low priority
+        0,
+        K_NO_WAIT
+    );
+
+    k_thread_create(
+        &log_thread_data,
+        log_stack,
+        K_THREAD_STACK_SIZEOF(log_stack),
+        live_log,
+        NULL, NULL, NULL,
+        5,
         0,
         K_NO_WAIT
     );
