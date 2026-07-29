@@ -80,6 +80,13 @@ public:
     ADS1299(const struct spi_dt_spec &spi, const struct gpio_dt_spec &reset_gpio);
 
     /**
+     * @brief setting up board HW for ADS1299 on Sokosti board
+     * 
+     * @return int 
+     */
+    int boardBringUp();
+    
+    /**
      * @brief initialization of ads1299
      * 
      * @return int 
@@ -93,7 +100,9 @@ public:
      * @return int 
      */
     int configure(const ADS1299Settings &cfg);
+    
     int dumpTestRegisters();
+    
     int dumpTestRegistersUsb();
 
     /* streaming */
