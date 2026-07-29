@@ -34,6 +34,10 @@ struct SamplePacket {
 };
 #pragma pack(pop)
 
+/*
+ * Devicetree aliases / node labels for the Sokosti board.
+ * LED is kept here (used by threads); the rest are passed to ADS1299.
+ */
 #define ADS_NODE        DT_NODELABEL(ads1299)
 #define LED_NODE        DT_ALIAS(led0)
 #define RESET_NODE      DT_NODELABEL(reset_ads)
@@ -63,11 +67,10 @@ static const struct gpio_dt_spec drdy_pin =
 static const struct pwm_dt_spec ads_clk_pwm =
     PWM_DT_SPEC_GET(ADS_CLK_NODE);
 
-/* Single ADS1299 instance for this board, bound to its SPI bus + RESET pin. */
-static ADS1299 ads(ads_spi, reset_pin);
+/* Single ADS1299 instance — all board pins are bound at construction. */
+static ADS1299 ads(ads_spi, reset_pin, start_pin, drdy_pin, led, ads_clk_pwm);
 
-static K_SEM_DEFINE(drdy_sem, 0, 1);
-static struct gpio_callback drdy_cb_data;
+static ADS1299Settings cfg = makeAdsSettings(AdsPreset::AllChannelsMeasurement);
 
 constexpr size_t BATCH_SIZE = 8;
 
@@ -98,91 +101,6 @@ static uint8_t computeChecksum(const SamplePacket &p) {
     return sum;
 }
 
-static void drdy_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
-{
-    k_sem_give(&drdy_sem);
-}
-
-static int setup_drdy_interrupt(void)
-{
-    int ret = gpio_pin_interrupt_configure_dt(&drdy_pin, GPIO_INT_EDGE_FALLING);
-    if (ret) {
-        return ret;
-    }
-
-    gpio_init_callback(&drdy_cb_data, drdy_isr, BIT(drdy_pin.pin));
-    gpio_add_callback(drdy_pin.port, &drdy_cb_data);
-
-    return 0;
-}
-
-static int start_ads_pwm_clock(void)
-{
-    if (!pwm_is_ready_dt(&ads_clk_pwm)) {
-        LOG_ERR("ADS clock PWM not ready");
-        return -ENODEV;
-    }
-
-    /*
-     * ~2 MHz: 500 ns period, 250 ns pulse.
-     * ADS1299 typical external fCLK is 2.048 MHz in datasheet examples [14].
-     */
-    int ret = pwm_set_dt(&ads_clk_pwm, PWM_NSEC(500), PWM_NSEC(250));
-    if (ret) {
-        LOG_ERR("PWM start failed: %d", ret);
-        return ret;
-    }
-
-    LOG_INF("ADS clock PWM started");
-    return 0;
-}
-
-static int setup_gpios(void)
-{
-    int ret;
-
-    if (!gpio_is_ready_dt(&led) ||
-        !gpio_is_ready_dt(&reset_pin) ||
-        !gpio_is_ready_dt(&start_pin) ||
-        !gpio_is_ready_dt(&drdy_pin)) {
-        LOG_ERR("GPIO not ready");
-        return -ENODEV;
-    }
-
-    ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
-    if (ret) {
-        return ret;
-    }
-
-    ret = gpio_pin_configure_dt(&reset_pin, GPIO_OUTPUT_INACTIVE);
-    if (ret) {
-        return ret;
-    }
-
-    ret = gpio_pin_configure_dt(&start_pin, GPIO_OUTPUT_INACTIVE);
-    if (ret) {
-        return ret;
-    }
-
-    ret = gpio_pin_configure_dt(&drdy_pin, GPIO_INPUT);
-    if (ret) {
-        return ret;
-    }
-
-    return 0;
-}
-
-static int setup_ads(AdsPreset preset)
-{
-    ADS1299Settings cfg = makeAdsSettings(preset);
-    
-    int ret = ads.configure(cfg);
-    if (ret) {
-        LOG_ERR("ADS configuration failed: %d", ret);
-    }
-    return ret;
-}
-
 static void usb_writer_thread(void *arg1, void *arg2, void *arg3)
 {
     SampleBatch out_batch;
@@ -208,7 +126,7 @@ static void acquisition_thread(void *arg1, void *arg2, void *arg3)
     size_t batch_count = 0;
 
     while (true) {
-        k_sem_take(&drdy_sem, K_FOREVER);
+        k_sem_take(&ADS1299::drdy_sem, K_FOREVER);
 
         ret = ads.readFrameRdatac(frame);
         if (ret) {
@@ -275,7 +193,7 @@ int main(void)
     uint8_t id = 0;
 
     // ---------------------------------------
-    // board setup
+    // USB CDC (host communication)
     // ---------------------------------------
 
     ret = usb_cdc::init();
@@ -285,49 +203,35 @@ int main(void)
     }
 
     k_msleep(100);
-    k_sleep(K_MSEC(500));
     LOG_INF("ADS1299 internal test signal capture starting...");
 
-    if (!spi_is_ready_dt(&ads_spi)) {
-        LOG_ERR("SPI device not ready");
+    // ---------------------------------------
+    // Board bring-up — GPIOs, DRDY IRQ, PWM clock
+    // ---------------------------------------
+
+    ret = ads.boardBringUp();
+    if (ret) {
+        LOG_ERR("Board bring-up failed: %d", ret);
         return 0;
     }
 
-    ret = setup_gpios();
-    if (ret) {
-        LOG_ERR("GPIO setup failed: %d", ret);
-        return 0;
-    }
-
-    ret = setup_drdy_interrupt();
-    if (ret) {
-        LOG_ERR("DRDY interrupt setup failed: %d", ret);
-        return 0;
-    }
-
-    /*
-     * Keep START pin low and use the SPI START command.
-     * Datasheet says when using START command, hold START pin low [9], [27].
-     */
-    gpio_pin_set_dt(&start_pin, 0);
-
-    ret = start_ads_pwm_clock();
-    if (ret) {
-        LOG_ERR("Warning: ADS clock not running: %d", ret);
-    }
+    k_sleep(K_MSEC(500));
 
     // ---------------------------------------
-    // ADS1299 setup
+    // ADS1299 initialisation & configuration
     // ---------------------------------------
 
     ret = ads.init(&id);
     if (ret) {
         LOG_ERR("ADS1299 init failed: %d", ret);
-        return 0;
+        return ret;
     }
-
-     
-    ret = setup_ads(AdsPreset::AllChannelsMeasurement);
+    
+    ret = ads.configure(cfg);
+    if (ret) {
+        LOG_ERR("ADS configuration failed: %d", ret);
+        return ret;
+    }
 
     /*
      * Dump registers before RDATAC. Register access should be done outside

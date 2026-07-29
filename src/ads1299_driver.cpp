@@ -1,6 +1,6 @@
 /**
  * @file ADS1299.cpp
- * @brief Zephyr C++ driver class for the TI ADS1299 8-channel EMG ADC.
+ * @brief Zephyr C++ driver class for the TI ADS1299 8-channel EMG ADC on Skosti board.
  * @version 0.2
  * @date 2026-07-08
  */
@@ -10,8 +10,18 @@
 
 LOG_MODULE_REGISTER(ads1299_driver, LOG_LEVEL_DBG);
 
-ADS1299::ADS1299(const struct spi_dt_spec &spi, const struct gpio_dt_spec &reset_gpio)
-    : spi_(spi), reset_gpio_(reset_gpio)
+ADS1299::ADS1299(const struct spi_dt_spec &spi,
+                 const struct gpio_dt_spec &reset_gpio,
+                 const struct gpio_dt_spec &start_pin,
+                 const struct gpio_dt_spec &drdy_pin,
+                 const struct gpio_dt_spec &led_pin,
+                 const struct pwm_dt_spec   &ads_clk_pwm)
+    : spi_(spi),
+      reset_gpio_(reset_gpio),
+      start_pin_(start_pin),
+      drdy_pin_(drdy_pin),
+      led_pin_(led_pin),
+      ads_clk_pwm_(ads_clk_pwm)
 {
     for (auto &ch : settings.channel) {
         ch.mux = 0;  // normal electrode input
@@ -456,4 +466,126 @@ int32_t ADS1299::decode24(const uint8_t *p)
     }
 
     return v;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Static members (defined here, declared in the header)             */
+/* ------------------------------------------------------------------ */
+
+struct k_sem ADS1299::drdy_sem;
+struct gpio_callback ADS1299::drdy_cb_data_;
+
+/* ------------------------------------------------------------------ */
+/*  Board bring-up                                                    */
+/* ------------------------------------------------------------------ */
+
+int ADS1299::boardBringUp()
+{
+    int ret;
+
+    /* 0. Initialise the DRDY semaphore (binary) */
+    k_sem_init(&drdy_sem, 0, 1);
+
+    /* 1. Check SPI is ready */
+    if (!spi_is_ready_dt(&spi_)) {
+        LOG_ERR("SPI device not ready");
+        return -ENODEV;
+    }
+
+    /* 2. Configure all GPIOs */
+    ret = setupGpios();
+    if (ret) {
+        LOG_ERR("GPIO setup failed: %d", ret);
+        return ret;
+    }
+
+    /* 3. Keep START pin low — we use the START command over SPI */
+    gpio_pin_set_dt(&start_pin_, 0);
+
+    /* 4. Set up DRDY falling-edge interrupt */
+    ret = setupDrdyInterrupt();
+    if (ret) {
+        LOG_ERR("DRDY interrupt setup failed: %d", ret);
+        return ret;
+    }
+
+    /* 5. Start the PWM clock (~2 MHz) for the ADS1299 external fCLK */
+    ret = startAdsPwmClock();
+    if (ret) {
+        LOG_ERR("Warning: ADS clock not running: %d", ret);
+        /* non-fatal — the board may use an external crystal */
+    }
+
+    LOG_INF("ADS1299 board bring-up complete");
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Private helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+int ADS1299::setupGpios()
+{
+    int ret;
+
+    if (!gpio_is_ready_dt(&led_pin_) ||
+        !gpio_is_ready_dt(&reset_gpio_) ||
+        !gpio_is_ready_dt(&start_pin_) ||
+        !gpio_is_ready_dt(&drdy_pin_)) {
+        LOG_ERR("GPIO not ready");
+        return -ENODEV;
+    }
+
+    ret = gpio_pin_configure_dt(&led_pin_, GPIO_OUTPUT_INACTIVE);
+    if (ret) return ret;
+
+    ret = gpio_pin_configure_dt(&reset_gpio_, GPIO_OUTPUT_INACTIVE);
+    if (ret) return ret;
+
+    ret = gpio_pin_configure_dt(&start_pin_, GPIO_OUTPUT_INACTIVE);
+    if (ret) return ret;
+
+    ret = gpio_pin_configure_dt(&drdy_pin_, GPIO_INPUT);
+    if (ret) return ret;
+
+    return 0;
+}
+
+int ADS1299::setupDrdyInterrupt()
+{
+    int ret = gpio_pin_interrupt_configure_dt(&drdy_pin_, GPIO_INT_EDGE_FALLING);
+    if (ret) return ret;
+
+    gpio_init_callback(&drdy_cb_data_, drdyIsr, BIT(drdy_pin_.pin));
+    gpio_add_callback(drdy_pin_.port, &drdy_cb_data_);
+
+    return 0;
+}
+
+int ADS1299::startAdsPwmClock()
+{
+    if (!pwm_is_ready_dt(&ads_clk_pwm_)) {
+        LOG_ERR("ADS clock PWM not ready");
+        return -ENODEV;
+    }
+
+    /*
+     * ~2 MHz: 500 ns period, 250 ns pulse.
+     * ADS1299 typical external fCLK is 2.048 MHz in datasheet examples [14].
+     */
+    int ret = pwm_set_dt(&ads_clk_pwm_, PWM_NSEC(500), PWM_NSEC(250));
+    if (ret) {
+        LOG_ERR("PWM start failed: %d", ret);
+        return ret;
+    }
+
+    LOG_INF("ADS clock PWM started");
+    return 0;
+}
+
+void ADS1299::drdyIsr(const struct device *dev,
+                      struct gpio_callback *cb,
+                      uint32_t pins)
+{
+    k_sem_give(&drdy_sem);
 }
