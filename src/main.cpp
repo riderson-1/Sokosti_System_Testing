@@ -386,7 +386,7 @@ int main(void)
         K_THREAD_STACK_SIZEOF(led_stack),
         led_toggling,
         NULL, NULL, NULL,
-        5,          // low priority
+        10,          // low priority
         0,
         K_NO_WAIT
     );
@@ -397,7 +397,7 @@ int main(void)
         K_THREAD_STACK_SIZEOF(log_stack),
         live_log,
         NULL, NULL, NULL,
-        5,
+        10,
         0,
         K_NO_WAIT
     );
