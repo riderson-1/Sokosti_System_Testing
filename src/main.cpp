@@ -22,17 +22,7 @@
 #include "ads1299_driver.hpp"
 #include "usb_cdc.hpp"
 #include "ads1299_configs.hpp"
-
-#pragma pack(push, 1)
-struct SamplePacket {
-    uint8_t  sync[2];      // 0xAA 0x55 — resync marker for the host parser
-    uint32_t sample_idx;
-    uint8_t  status1_ok;
-    uint8_t  status2_ok;
-    uint8_t  ch_data[48];  // 16 channels * 3 bytes raw, unmodified 24-bit values
-    uint8_t  checksum;     // simple XOR or sum, so host can detect a corrupted packet
-};
-#pragma pack(pop)
+#include "threads.hpp"
 
 /*
  * Devicetree aliases / node labels for the Sokosti board.
@@ -52,7 +42,7 @@ static const struct spi_dt_spec ads_spi =
     SPI_DT_SPEC_GET(ADS_NODE,
             SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_MODE_CPHA);
 
-static const struct gpio_dt_spec led =
+const struct gpio_dt_spec led =
     GPIO_DT_SPEC_GET(LED_NODE, gpios);
 
 static const struct gpio_dt_spec reset_pin =
@@ -68,124 +58,13 @@ static const struct pwm_dt_spec ads_clk_pwm =
     PWM_DT_SPEC_GET(ADS_CLK_NODE);
 
 /* Single ADS1299 instance — all board pins are bound at construction. */
-static ADS1299 ads(ads_spi, reset_pin, start_pin, drdy_pin, led, ads_clk_pwm);
+ADS1299 ads(ads_spi, reset_pin, start_pin, drdy_pin, led, ads_clk_pwm);
 
 static ADS1299Settings cfg = makeAdsSettings(AdsPreset::AllChannelsMeasurement);
 
-constexpr size_t BATCH_SIZE = 8;
-
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
-struct SampleBatch {
-    SamplePacket samples[BATCH_SIZE];
-};
-
-K_MSGQ_DEFINE(batch_queue, sizeof(SampleBatch), 4, 4);
-
-K_THREAD_STACK_DEFINE(acq_stack, 4096);
-K_THREAD_STACK_DEFINE(usb_stack, 4096);
-K_THREAD_STACK_DEFINE(led_stack, 4096);
-K_THREAD_STACK_DEFINE(log_stack, 4096);
-
-static struct k_thread acq_thread_data;
-static struct k_thread usb_thread_data;
-static struct k_thread led_thread_data;
-static struct k_thread log_thread_data;
-
-static int32_t last_ch1_code = 0;
-
-static uint8_t computeChecksum(const SamplePacket &p) {
-    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&p);
-    uint8_t sum = 0;
-    for (size_t i = 0; i < sizeof(SamplePacket) - 1; i++) sum ^= bytes[i]; // exclude checksum field itself
-    return sum;
-}
-
-static void usb_writer_thread(void *arg1, void *arg2, void *arg3)
-{
-    SampleBatch out_batch;
-
-    while (true) {
-        int ret = k_msgq_get(&batch_queue, &out_batch, K_FOREVER);
-        if (ret == 0) {
-            usb_cdc::print(
-                reinterpret_cast<const char *>(out_batch.samples),
-                sizeof(out_batch.samples)
-            );
-        }
-    }
-}
-
-static void acquisition_thread(void *arg1, void *arg2, void *arg3)
-{
-    int ret;
-    uint8_t frame[ADS_DAISY_FRAME_BYTES];
-    uint32_t sample_idx = 0;
-
-    SampleBatch batch;
-    size_t batch_count = 0;
-
-    while (true) {
-        k_sem_take(&ADS1299::drdy_sem, K_FOREVER);
-
-        ret = ads.readFrameRdatac(frame);
-        if (ret) {
-            LOG_ERR("Frame read failed: %d", ret);
-            gpio_pin_toggle_dt(&led);
-            continue;
-        }
-
-        last_ch1_code = ads.decode24(&frame[3]);  // ch1, device 1 for debugging
-
-        SamplePacket &pkt = batch.samples[batch_count];
-
-        pkt.sync[0] = 0xAA;      // ← FIXED
-        pkt.sync[1] = 0x55;      // ← FIXED
-        pkt.sample_idx  = sample_idx;
-        pkt.status1_ok  = ((frame[0] & 0xF0) == 0xC0) ? 1 : 0;   // ← FIXED
-        pkt.status2_ok  = ((frame[27] & 0xF0) == 0xC0) ? 1 : 0;  // ← FIXED
-
-        memcpy(pkt.ch_data,      &frame[3],  24);   // ← FIXED: device 1
-        memcpy(pkt.ch_data + 24, &frame[30], 24);   // ← FIXED: device 2
-
-        pkt.checksum = computeChecksum(pkt);
-
-        batch_count++;
-
-        if (batch_count == BATCH_SIZE) {
-            int qret = k_msgq_put(&batch_queue, &batch, K_NO_WAIT);
-
-            if (qret != 0) {
-                /*
-                 * Queue full. USB cannot keep up.
-                 * Do not block acquisition. Count/drop/report later.
-                 */
-                // dropped_batches++;
-            }
-
-            batch_count = 0;
-        }
-        sample_idx++;
-    }
-}
-
-static void led_toggling(void *arg1, void *arg2, void *arg3)
-{
-    while (true) {
-        k_sleep(K_MSEC(500));
-        gpio_pin_toggle_dt(&led);
-    }
-}
-
-static void live_log(void *arg1, void *arg2, void *arg3)
-{
-    while (true) {
-        k_sleep(K_MSEC(500));
-        int32_t ch1 = last_ch1_code;  // atomic read on Cortex-M33
-        LOG_INF("ch1 code = %d  (%.2f uV)", ch1,
-                (double)ch1 * 5.0 / 8.0 / 8388608.0 * 1e6);
-    }
-}
+int32_t last_ch1_code = 0;
 
 int main(void)
 {
@@ -262,49 +141,7 @@ int main(void)
     }
 
     // create RTOS threads
-    k_thread_create(
-        &acq_thread_data,
-        acq_stack,
-        K_THREAD_STACK_SIZEOF(acq_stack),
-        acquisition_thread,
-        NULL, NULL, NULL,
-        1,          // high priority
-        0,
-        K_NO_WAIT
-    );
-
-    k_thread_create(
-        &usb_thread_data,
-        usb_stack,
-        K_THREAD_STACK_SIZEOF(usb_stack),
-        usb_writer_thread,
-        NULL, NULL, NULL,
-        5,          // low priority
-        0,
-        K_NO_WAIT
-    );
-
-    k_thread_create(
-        &led_thread_data,
-        led_stack,
-        K_THREAD_STACK_SIZEOF(led_stack),
-        led_toggling,
-        NULL, NULL, NULL,
-        10,          // low priority
-        0,
-        K_NO_WAIT
-    );
-
-    k_thread_create(
-        &log_thread_data,
-        log_stack,
-        K_THREAD_STACK_SIZEOF(log_stack),
-        live_log,
-        NULL, NULL, NULL,
-        10,
-        0,
-        K_NO_WAIT
-    );
+    threads_setup();
 
 
     // ---------------------------------------

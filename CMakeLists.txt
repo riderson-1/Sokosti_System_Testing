@@ -12,6 +12,7 @@ project(sokosti_system_integration_test)
 # NORDIC SDK APP START
 target_sources(app PRIVATE
     src/main.cpp
+    src/threads.cpp
     src/usb_cdc.cpp
     src/ads1299_driver.cpp
     src/sample_usbd_init.c
