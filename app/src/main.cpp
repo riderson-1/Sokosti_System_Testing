@@ -7,9 +7,9 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <zephyr/drivers/spi.h>
-#include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/pwm.h>
+// #include <zephyr/drivers/spi.h>
+// #include <zephyr/drivers/gpio.h>
+// #include <zephyr/drivers/pwm.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/logging/log.h>
 

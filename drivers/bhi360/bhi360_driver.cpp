@@ -3,6 +3,10 @@
 
  #include <zephyr/kernel.h>
  #include <zephyr/logging/log.h>
+ #include <zephyr/drivers/spi.h>
+ #include <zephyr/drivers/gpio.h>
+ #include <zephyr/device.h>
+ #include <stdio.h>
  #include <nrfx.h>
  #include <hal/nrf_gpio.h>
  #include <nrfx_spim.h>
@@ -13,6 +17,36 @@
  #include "bhy2_parse.h"
  #include "firmware/bhi360/BHI360_Aux_BMM150.fw.h"
  }
+
+static const char *get_api_error(int8_t error_code)
+{
+    switch (error_code) {
+        case BHY2_OK:              return "BHY2_OK";
+        case BHY2_E_NULL_PTR:      return "BHY2_E_NULL_PTR";
+        case BHY2_E_INVALID_PARAM: return "BHY2_E_INVALID_PARAM";
+        case BHY2_E_IO:            return "BHY2_E_IO";
+        case BHY2_E_MAGIC:         return "BHY2_E_MAGIC";
+        case BHY2_E_TIMEOUT:       return "BHY2_E_TIMEOUT";
+        case BHY2_E_BUFFER:        return "BHY2_E_BUFFER";
+        default:                   return "Unknown error code";
+    }
+}
+
+// static const char *get_sensor_error_text(uint8_t sensor_error)
+// {
+//     switch (sensor_error) {
+//         case 0:  return "No error";
+//         default: return "Unknown sensor error";
+//     }
+// }
+
+// static const char *get_sensor_name(uint8_t sensor_id)
+// {
+//     switch (sensor_id) {
+//         case BHY2_SENSOR_ID_RV: return "Rotation Vector";
+//         default:                return "Unknown sensor";
+//     }
+// }
 
  #define BHY2_RD_WR_LEN 256
  #define WORK_BUFFER_SIZE 2048
@@ -33,22 +67,23 @@
  };
  #define NUM_IMUS (sizeof(imu_devices) / sizeof(imu_devices[0]))
 
- static const nrfx_spim_t m_spi = NRFX_SPIM_INSTANCE(3);
+static nrfx_spim_t m_spi = NRFX_SPIM_INSTANCE(3);
+
  #define BSP_SPI_MISO NRF_GPIO_PIN_MAP(1, 8)
  #define BSP_SPI_MOSI NRF_GPIO_PIN_MAP(0, 30)
  #define BSP_SPI_CLK NRF_GPIO_PIN_MAP(0, 31)
  static uint32_t imu_sample_idx;
 
  static void print_api_error(int8_t rslt, struct bhy2_dev *dev)
- {
-	 if (rslt != BHY2_OK) {
-		 LOG_ERR("API error: %d", rslt);
-		 if (rslt == BHY2_E_IO && dev != NULL) {
-			 LOG_ERR("Interface error: %d", dev->hif.intf_rslt);
-			 dev->hif.intf_rslt = BHY2_INTF_RET_SUCCESS;
-		 }
-	 }
- }
+{
+    if (rslt != BHY2_OK) {
+        LOG_ERR("API error: %s", get_api_error(rslt));  // was "%d", rslt
+        if (rslt == BHY2_E_IO && dev != NULL) {
+            LOG_ERR("Interface error: %d", dev->hif.intf_rslt);
+            dev->hif.intf_rslt = BHY2_INTF_RET_SUCCESS;
+        }
+    }
+}
 
  static int8_t upload_firmware(struct bhy2_dev *dev)
  {
@@ -65,8 +100,6 @@
 	 return rslt;
  }
 
- #define APP_ERROR_CHECK(err_code) do { if ((err_code) != NRFX_SUCCESS) LOG_ERR("Error %d", (err_code)); } while (0)
-
  static void setup_SPI(imu_device_t *imu)
  {
 	 nrfx_spim_config_t config = NRFX_SPIM_DEFAULT_CONFIG(BSP_SPI_CLK, BSP_SPI_MOSI, BSP_SPI_MISO, imu->cs_pin);
@@ -76,7 +109,11 @@
 	 config.mode = NRF_SPIM_MODE_0;
 	 static bool initialized;
 	 if (!initialized) {
-		 APP_ERROR_CHECK(nrfx_spim_init(&m_spi, &config, NULL, NULL));
+		 int err = nrfx_spim_init(&m_spi, &config, NULL, NULL);
+		 if (err != 0) {
+			 LOG_ERR("SPIM initialization failed: %d", err);
+			 return;
+		 }
 		 initialized = true;
 	 }
  }
@@ -86,11 +123,15 @@
 	 auto *imu = static_cast<imu_device_t *>(ptr);
 	 uint8_t tx[1] = { static_cast<uint8_t>(reg | 0x80) };
 	 uint8_t rx[length + 1];
-	 volatile uint32_t *end = reinterpret_cast<uint32_t *>(nrfx_spim_end_event_get(&m_spi));
-	 auto desc = NRFX_SPIM_XFER_TRX(tx, sizeof(tx), rx, sizeof(rx));
-	 int err = nrfx_spim_xfer(&m_spi, &desc, NRFX_SPIM_FLAG_NO_XFER_EVT_HANDLER);
-	 APP_ERROR_CHECK(err);
-	 if (err == NRFX_SUCCESS) { while (*end == 0) {} *end = 0; }
+	 
+	 nrfx_spim_xfer_desc_t desc = NRFX_SPIM_XFER_TRX(tx, sizeof(tx), rx, sizeof(rx));
+
+	 int err = nrfx_spim_xfer(&m_spi, &desc, 0);
+	 if (err != 0) {
+		 LOG_ERR("SPIM read failed: %d", err);
+		 nrf_gpio_pin_set(imu->cs_pin);
+		 return -1;
+	 }
 	 nrf_gpio_pin_set(imu->cs_pin);
 	 memcpy(data, &rx[1], length);
 	 return BHY2_INTF_RET_SUCCESS;
@@ -100,13 +141,17 @@
  {
 	 auto *imu = static_cast<imu_device_t *>(ptr);
 	 uint8_t tx[length + 1];
-	 volatile uint32_t *end = reinterpret_cast<uint32_t *>(nrfx_spim_end_event_get(&m_spi));
 	 tx[0] = reg;
 	 memcpy(tx + 1, data, length);
-	 auto desc = NRFX_SPIM_XFER_TX(tx, length + 1);
-	 int err = nrfx_spim_xfer(&m_spi, &desc, NRFX_SPIM_FLAG_NO_XFER_EVT_HANDLER);
-	 APP_ERROR_CHECK(err);
-	 if (err == NRFX_SUCCESS) { while (*end == 0) {} *end = 0; }
+	 
+	 nrfx_spim_xfer_desc_t desc = NRFX_SPIM_XFER_TX(tx, length + 1);
+
+	 int err = nrfx_spim_xfer(&m_spi, &desc, 0);
+	 if (err != 0) {
+		 LOG_ERR("SPIM write failed: %d", err);
+		nrf_gpio_pin_set(imu->cs_pin);
+		return -1;
+	 }
 	 nrf_gpio_pin_set(imu->cs_pin);
 	 return BHY2_INTF_RET_SUCCESS;
  }
