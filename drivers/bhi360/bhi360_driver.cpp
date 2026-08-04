@@ -7,9 +7,6 @@
  #include <zephyr/drivers/gpio.h>
  #include <zephyr/device.h>
  #include <stdio.h>
- #include <nrfx.h>
- #include <hal/nrf_gpio.h>
- #include <nrfx_spim.h>
  #include <string.h>
 
  extern "C" {
@@ -56,22 +53,25 @@ static const char *get_api_error(int8_t error_code)
  LOG_MODULE_REGISTER(bhi360_driver, LOG_LEVEL_DBG);
 
  typedef struct {
-	 uint8_t cs_pin;
 	 struct bhy2_dev bhy2;
 	 bool initialized;
 	 char name[32];
  } imu_device_t;
 
  static imu_device_t imu_devices[] = {
-	 { .cs_pin = NRF_GPIO_PIN_MAP(1, 11), .initialized = false, .name = "IMU_1" }
+	 { .initialized = false, .name = "IMU_1" }
  };
  #define NUM_IMUS (sizeof(imu_devices) / sizeof(imu_devices[0]))
 
-static nrfx_spim_t m_spi = NRFX_SPIM_INSTANCE(3);
+ #define BHI360_NODE DT_NODELABEL(imu_ext)
+#define BHI360_RESET_NODE DT_NODELABEL(reset_imu_ext)
+ #define BHI360_SPI_OPERATION (SPI_WORD_SET(8) | SPI_TRANSFER_MSB)
 
- #define BSP_SPI_MISO NRF_GPIO_PIN_MAP(1, 8)
- #define BSP_SPI_MOSI NRF_GPIO_PIN_MAP(0, 30)
- #define BSP_SPI_CLK NRF_GPIO_PIN_MAP(0, 31)
+ static const struct spi_dt_spec bhi360_spi =
+	 SPI_DT_SPEC_GET(BHI360_NODE, BHI360_SPI_OPERATION);
+static const struct gpio_dt_spec bhi360_reset =
+	 GPIO_DT_SPEC_GET(BHI360_RESET_NODE, gpios);
+
  static uint32_t imu_sample_idx;
 
  static void print_api_error(int8_t rslt, struct bhy2_dev *dev)
@@ -100,59 +100,114 @@ static nrfx_spim_t m_spi = NRFX_SPIM_INSTANCE(3);
 	 return rslt;
  }
 
- static void setup_SPI(imu_device_t *imu)
+static bool setup_SPI(void)
  {
-	 nrfx_spim_config_t config = NRFX_SPIM_DEFAULT_CONFIG(BSP_SPI_CLK, BSP_SPI_MOSI, BSP_SPI_MISO, imu->cs_pin);
-	 config.ss_pin = imu->cs_pin;
-	 config.bit_order = NRF_SPIM_BIT_ORDER_MSB_FIRST;
-	 config.frequency = NRF_SPIM_FREQ_32M;
-	 config.mode = NRF_SPIM_MODE_0;
-	 static bool initialized;
-	 if (!initialized) {
-		 int err = nrfx_spim_init(&m_spi, &config, NULL, NULL);
-		 if (err != 0) {
-			 LOG_ERR("SPIM initialization failed: %d", err);
-			 return;
-		 }
-		 initialized = true;
+	 if (!spi_is_ready_dt(&bhi360_spi)) {
+		 LOG_ERR("BHI360 SPI device or chip select is not ready");
+		 return false;
 	 }
+	 if (!gpio_is_ready_dt(&bhi360_reset)) {
+		 LOG_ERR("BHI360 reset GPIO is not ready");
+		 return false;
+	 }
+	 int ret = gpio_pin_configure_dt(&bhi360_reset, GPIO_OUTPUT_INACTIVE);
+	 if (ret != 0) {
+		 LOG_ERR("BHI360 reset GPIO configuration failed: %d", ret);
+		 return false;
+	 }
+	 ret = gpio_pin_set_dt(&bhi360_reset, 1);
+	 if (ret != 0) {
+		 LOG_ERR("BHI360 reset assertion failed: %d", ret);
+		 return false;
+	 }
+	 k_msleep(2);
+	 ret = gpio_pin_set_dt(&bhi360_reset, 0);
+	 if (ret != 0) {
+		 LOG_ERR("BHI360 reset release failed: %d", ret);
+		 return false;
+	 }
+	 k_msleep(10);
+	 LOG_DBG("BHI360 SPI device is ready");
+	 return true;
  }
+
+static bool test_bhi360_spi(void)
+{
+	 /* A register read needs one byte for the address and one dummy byte to
+	  * generate the clock edge on which the sensor returns the value. */
+	 uint8_t tx[2] = { 0x80, 0x00 };
+	 uint8_t rx[2] = { 0xff, 0xff };
+
+	 struct spi_buf tx_buf;
+	 tx_buf.buf = tx;
+	 tx_buf.len = sizeof(tx);
+	 struct spi_buf_set tx_set;
+	 tx_set.buffers = &tx_buf;
+	 tx_set.count = 1;
+
+	 struct spi_buf rx_buf;
+	 rx_buf.buf = rx;
+	 rx_buf.len = sizeof(rx);
+	 struct spi_buf_set rx_set;
+	 rx_set.buffers = &rx_buf;
+	 rx_set.count = 1;
+
+	 int ret = spi_transceive_dt(&bhi360_spi, &tx_set, &rx_set);
+	 LOG_INF("BHI360 SPI test: ret=%d, rx[0]=0x%02x, product=0x%02x",
+			 ret, rx[0], rx[1]);
+
+	 return ret == 0 && rx[1] != 0xff;
+}
 
  static int8_t bhi360_spi_read(uint8_t reg, uint8_t *data, uint32_t length, void *ptr)
  {
-	 auto *imu = static_cast<imu_device_t *>(ptr);
-	 uint8_t tx[1] = { static_cast<uint8_t>(reg | 0x80) };
+	 ARG_UNUSED(ptr);
+	 uint8_t tx[length + 1];
 	 uint8_t rx[length + 1];
-	 
-	 nrfx_spim_xfer_desc_t desc = NRFX_SPIM_XFER_TRX(tx, sizeof(tx), rx, sizeof(rx));
+	 memset(tx, 0, sizeof(tx));
+	 tx[0] = static_cast<uint8_t>(reg | 0x80);
 
-	 int err = nrfx_spim_xfer(&m_spi, &desc, 0);
+	 struct spi_buf tx_buf;
+	 tx_buf.buf = tx;
+	 tx_buf.len = sizeof(tx);
+	 struct spi_buf_set tx_set;
+	 tx_set.buffers = &tx_buf;
+	 tx_set.count = 1;
+	 struct spi_buf rx_buf;
+	 rx_buf.buf = rx;
+	 rx_buf.len = sizeof(rx);
+	 struct spi_buf_set rx_set;
+	 rx_set.buffers = &rx_buf;
+	 rx_set.count = 1;
+
+	 int err = spi_transceive_dt(&bhi360_spi, &tx_set, &rx_set);
 	 if (err != 0) {
 		 LOG_ERR("SPIM read failed: %d", err);
-		 nrf_gpio_pin_set(imu->cs_pin);
 		 return -1;
 	 }
-	 nrf_gpio_pin_set(imu->cs_pin);
 	 memcpy(data, &rx[1], length);
 	 return BHY2_INTF_RET_SUCCESS;
  }
 
  static int8_t bhi360_spi_write(uint8_t reg, const uint8_t *data, uint32_t length, void *ptr)
  {
-	 auto *imu = static_cast<imu_device_t *>(ptr);
+	 ARG_UNUSED(ptr);
 	 uint8_t tx[length + 1];
 	 tx[0] = reg;
 	 memcpy(tx + 1, data, length);
-	 
-	 nrfx_spim_xfer_desc_t desc = NRFX_SPIM_XFER_TX(tx, length + 1);
 
-	 int err = nrfx_spim_xfer(&m_spi, &desc, 0);
+	 struct spi_buf tx_buf;
+	 tx_buf.buf = tx;
+	 tx_buf.len = sizeof(tx);
+	 struct spi_buf_set tx_set;
+	 tx_set.buffers = &tx_buf;
+	 tx_set.count = 1;
+
+	 int err = spi_write_dt(&bhi360_spi, &tx_set);
 	 if (err != 0) {
 		 LOG_ERR("SPIM write failed: %d", err);
-		nrf_gpio_pin_set(imu->cs_pin);
 		return -1;
 	 }
-	 nrf_gpio_pin_set(imu->cs_pin);
 	 return BHY2_INTF_RET_SUCCESS;
  }
 
@@ -203,26 +258,51 @@ static nrfx_spim_t m_spi = NRFX_SPIM_INSTANCE(3);
  {
 	 uint8_t product_id = 0, boot_status;
 	 uint16_t version = 0;
-	 nrf_gpio_cfg_output(imu->cs_pin);
-	 nrf_gpio_pin_clear(imu->cs_pin);
-	 k_sleep(K_USEC(1));
+	 k_msleep(10);
 	 int8_t rslt = bhy2_init(BHY2_SPI_INTERFACE, bhi360_spi_read, bhi360_spi_write,
 							  bhi360_delay_us, BHY2_RD_WR_LEN, imu, &imu->bhy2);
-	 if (rslt != BHY2_OK || bhy2_soft_reset(&imu->bhy2) != BHY2_OK) return false;
+	 if (rslt != BHY2_OK) {
+		 LOG_ERR("%s: bhy2_init failed: %d", imu->name, rslt);
+		 return false;
+	 }
+	 rslt = bhy2_soft_reset(&imu->bhy2);
+	 if (rslt != BHY2_OK) {
+		 LOG_ERR("%s: BHI360 soft reset failed: %d", imu->name, rslt);
+		 return false;
+	 }
 	 bool id_ok = false;
 	 for (int retry = 0; retry < 20; ++retry) {
 		 rslt = bhy2_get_product_id(&product_id, &imu->bhy2);
 		 if (rslt == BHY2_OK && product_id == BHY2_PRODUCT_ID) { id_ok = true; break; }
 		 k_msleep(10);
 	 }
-	 if (!id_ok) return false;
+	 if (!id_ok) {
+		 LOG_ERR("%s: product ID failed: result=%d, ID=0x%02x", imu->name, rslt, product_id);
+		 return false;
+	 }
 	 uint8_t hintr_ctrl = BHY2_ICTL_DISABLE_STATUS_FIFO | BHY2_ICTL_DISABLE_DEBUG;
 	 print_api_error(bhy2_set_host_interrupt_ctrl(hintr_ctrl, &imu->bhy2), &imu->bhy2);
 	 print_api_error(bhy2_set_host_intf_ctrl(0, &imu->bhy2), &imu->bhy2);
 	 rslt = bhy2_get_boot_status(&boot_status, &imu->bhy2);
-	 if (rslt != BHY2_OK || !(boot_status & BHY2_BST_HOST_INTERFACE_READY)) return false;
-	 if (upload_firmware(&imu->bhy2) != BHY2_OK || bhy2_boot_from_ram(&imu->bhy2) != BHY2_OK) return false;
-	 if (bhy2_get_kernel_version(&version, &imu->bhy2) != BHY2_OK || version == 0) return false;
+	 if (rslt != BHY2_OK || !(boot_status & BHY2_BST_HOST_INTERFACE_READY)) {
+		 LOG_ERR("%s: host interface not ready: result=%d, status=0x%02x", imu->name, rslt, boot_status);
+		 return false;
+	 }
+	 rslt = upload_firmware(&imu->bhy2);
+	 if (rslt != BHY2_OK) {
+		 LOG_ERR("%s: firmware upload failed: %d", imu->name, rslt);
+		 return false;
+	 }
+	 rslt = bhy2_boot_from_ram(&imu->bhy2);
+	 if (rslt != BHY2_OK) {
+		 LOG_ERR("%s: boot from RAM failed: %d", imu->name, rslt);
+		 return false;
+	 }
+	 rslt = bhy2_get_kernel_version(&version, &imu->bhy2);
+	 if (rslt != BHY2_OK || version == 0) {
+		 LOG_ERR("%s: kernel version failed: result=%d, version=0x%04x", imu->name, rslt, version);
+		 return false;
+	 }
 	 print_api_error(bhy2_update_virtual_sensor_list(&imu->bhy2), &imu->bhy2);
 	 print_api_error(bhy2_set_virt_sensor_cfg(QUAT_SENSOR_ID, 100.0f, 0, &imu->bhy2), &imu->bhy2);
 	 print_api_error(bhy2_set_virt_sensor_cfg(LACC_SENSOR_ID, 100.0f, 0, &imu->bhy2), &imu->bhy2);
@@ -236,8 +316,17 @@ static nrfx_spim_t m_spi = NRFX_SPIM_INSTANCE(3);
  void bhi360_init(void)
  {
 	 for (size_t i = 0; i < NUM_IMUS; ++i) {
-		 setup_SPI(&imu_devices[i]);
-		 if (!initialize_imu(&imu_devices[i])) LOG_ERR("%s: IMU initialization failed", imu_devices[i].name);
+		 if (!setup_SPI()) {
+			 LOG_ERR("%s: SPI initialization failed", imu_devices[i].name);
+			 continue;
+		 }
+		 if (!test_bhi360_spi()) {
+			 LOG_ERR("%s: SPI communication test failed", imu_devices[i].name);
+			 continue;
+		 }
+		 if (!initialize_imu(&imu_devices[i])) {
+			 LOG_ERR("%s: IMU initialization failed", imu_devices[i].name);
+		 }
 	 }
  }
 
