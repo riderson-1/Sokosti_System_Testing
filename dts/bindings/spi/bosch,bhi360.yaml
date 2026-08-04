@@ -1,0 +1,12 @@
+description: Bosch BHI360 IMU Sensor
+
+compatible: "bosch,bhi360"
+
+include: spi-device.yaml
+
+properties:
+  int-gpios:
+    type: phandle-array
+    description: |
+      GPIO used for data ready interrupt.
+      The pin should be configured as active high or active low based on sensor configuration.

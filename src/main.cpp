@@ -23,6 +23,7 @@
 #include "usb_cdc.hpp"
 #include "ads1299_configs.hpp"
 #include "threads.hpp"
+#include "bhi360_driver.hpp"
 
 /*
  * Devicetree aliases / node labels for the Sokosti board.
@@ -140,8 +141,15 @@ int main(void)
         return 0;
     }
 
+    // ---------------------------------------
+    // BHI360 initialisation (independent nrfx_spim path)
+    // ---------------------------------------
+
+    bhi360_init();
+
     // create RTOS threads
     threads_setup();
+
 
 
     // ---------------------------------------
