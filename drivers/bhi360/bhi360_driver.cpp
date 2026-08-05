@@ -58,16 +58,16 @@ static const char *get_api_error(int8_t error_code)
 	 char name[32];
  } imu_device_t;
 
- static imu_device_t imu_devices[] = {
-	 { .initialized = false, .name = "IMU_1" }
- };
- #define NUM_IMUS (sizeof(imu_devices) / sizeof(imu_devices[0]))
+static imu_device_t imu_devices[] = {
+ { .initialized = false, .name = "IMU_1" }
+};
+#define NUM_IMUS (sizeof(imu_devices) / sizeof(imu_devices[0]))
 
- #define BHI360_NODE DT_NODELABEL(imu_ext)
-#define BHI360_RESET_NODE DT_NODELABEL(reset_imu_ext)
- #define BHI360_SPI_OPERATION (SPI_WORD_SET(8) | SPI_TRANSFER_MSB)
+#define BHI360_NODE DT_NODELABEL(imu_main)
+#define BHI360_RESET_NODE DT_NODELABEL(reset_imu_main)
+#define BHI360_SPI_OPERATION (SPI_WORD_SET(8) | SPI_TRANSFER_MSB)
 
- static const struct spi_dt_spec bhi360_spi =
+static const struct spi_dt_spec bhi360_spi =
 	 SPI_DT_SPEC_GET(BHI360_NODE, BHI360_SPI_OPERATION);
 static const struct gpio_dt_spec bhi360_reset =
 	 GPIO_DT_SPEC_GET(BHI360_RESET_NODE, gpios);
@@ -133,10 +133,10 @@ static bool setup_SPI(void)
 
 static bool test_bhi360_spi(void)
 {
-	 /* A register read needs one byte for the address and one dummy byte to
-	  * generate the clock edge on which the sensor returns the value. */
-	 uint8_t tx[2] = { 0x80, 0x00 };
-	 uint8_t rx[2] = { 0xff, 0xff };
+	 /* First CS pulse switches I/F from I2C to SPI - ignore result.
+	  * Read Fuser2 Identifier (0x1C) twice; discard first, check second == 0x89. */
+	 uint8_t tx[2] = { 0x00, 0x00 };
+	 uint8_t rx[2] = { 0x00, 0x00 };
 
 	 struct spi_buf tx_buf;
 	 tx_buf.buf = tx;
@@ -152,30 +152,51 @@ static bool test_bhi360_spi(void)
 	 rx_set.buffers = &rx_buf;
 	 rx_set.count = 1;
 
-	 int ret = spi_transceive_dt(&bhi360_spi, &tx_set, &rx_set);
-	 LOG_INF("BHI360 SPI test: ret=%d, rx[0]=0x%02x, product=0x%02x",
-			 ret, rx[0], rx[1]);
+	 /* First read - discard (switches I2C to SPI) */
+	 tx[0] = 0x1C | 0x80;  // Read Fuser2 Identifier register
+	 spi_transceive_dt(&bhi360_spi, &tx_set, &rx_set);
 
-	 return ret == 0 && rx[1] != 0xff;
-}
+	 /* Second read - check value */
+	 tx[0] = 0x1C | 0x80;  // Read Fuser2 Identifier register
+	 int ret = spi_transceive_dt(&bhi360_spi, &tx_set, &rx_set);
+
+	 LOG_INF("BHI360 SPI test: ret=%d, fuser2_id=0x%02x (expected 0x89)", ret, rx[1]);
+
+	 if (ret != 0) {
+		 LOG_ERR("SPI read failed");
+		 return false;
+	 }
+	 if (rx[1] != 0x89) {
+		 LOG_ERR("Fuser2 Identifier mismatch: got 0x%02x, expected 0x89", rx[1]);
+		 return false;
+	 }
+	 return true;
+ } /* extern "C" from line 13 */
 
  static int8_t bhi360_spi_read(uint8_t reg, uint8_t *data, uint32_t length, void *ptr)
  {
 	 ARG_UNUSED(ptr);
-	 uint8_t tx[length + 1];
-	 uint8_t rx[length + 1];
+	 if (length > BHY2_RD_WR_LEN) {
+		 LOG_ERR("SPI read length %u exceeds buffer", length);
+		 return -1;
+	 }
+	 /* TODO: static buffers are fine for single-threaded init, but if this
+	  * is ever called concurrently (e.g. from ISR or multiple threads),
+	  * these become shared-mutable-state hazards and need a mutex. */
+	 static uint8_t tx[BHY2_RD_WR_LEN + 1];
+	 static uint8_t rx[BHY2_RD_WR_LEN + 1];
 	 memset(tx, 0, sizeof(tx));
 	 tx[0] = static_cast<uint8_t>(reg | 0x80);
 
 	 struct spi_buf tx_buf;
 	 tx_buf.buf = tx;
-	 tx_buf.len = sizeof(tx);
+	 tx_buf.len = length + 1;
 	 struct spi_buf_set tx_set;
 	 tx_set.buffers = &tx_buf;
 	 tx_set.count = 1;
 	 struct spi_buf rx_buf;
 	 rx_buf.buf = rx;
-	 rx_buf.len = sizeof(rx);
+	 rx_buf.len = length + 1;
 	 struct spi_buf_set rx_set;
 	 rx_set.buffers = &rx_buf;
 	 rx_set.count = 1;
@@ -192,13 +213,21 @@ static bool test_bhi360_spi(void)
  static int8_t bhi360_spi_write(uint8_t reg, const uint8_t *data, uint32_t length, void *ptr)
  {
 	 ARG_UNUSED(ptr);
-	 uint8_t tx[length + 1];
-	 tx[0] = reg;
+	 if (length > BHY2_RD_WR_LEN) {
+		 LOG_ERR("SPI write length %u exceeds buffer", length);
+		 return -1;
+	 }
+	 /* TODO: static buffers are fine for single-threaded init, but if this
+	  * is ever called concurrently (e.g. from ISR or multiple threads),
+	  * these become shared-mutable-state hazards and need a mutex. */
+	 static uint8_t tx[BHY2_RD_WR_LEN + 1];
+	 memset(tx, 0, sizeof(tx));
+	 tx[0] = reg & 0x7F;  // Clear bit 7 for write operation
 	 memcpy(tx + 1, data, length);
 
 	 struct spi_buf tx_buf;
 	 tx_buf.buf = tx;
-	 tx_buf.len = sizeof(tx);
+	 tx_buf.len = length + 1;
 	 struct spi_buf_set tx_set;
 	 tx_set.buffers = &tx_buf;
 	 tx_set.count = 1;
@@ -251,7 +280,7 @@ static bool test_bhi360_spi(void)
 
  static void parse_meta_event(const struct bhy2_fifo_parse_data_info *info, void *)
  {
-	 LOG_INF("IMU meta event %u", info->data_ptr[0]);
+	//LOG_INF("IMU meta event %u", info->data_ptr[0]);
  }
 
  static bool initialize_imu(imu_device_t *imu)
