@@ -7,7 +7,7 @@
 
 #include "threads.hpp"
 #include "ads1299_driver.hpp"
-#include "usb_cdc.hpp"
+#include "ble/ble_nus.hpp"
 #include "bhi360_driver.hpp"
 
 #include <zephyr/logging/log.h>
@@ -26,13 +26,13 @@ K_MSGQ_DEFINE(imu_queue, sizeof(ImuSamplePacket), 8, 8);
  * Thread stacks and control blocks
  * ------------------------------------------------------------------------- */
 K_THREAD_STACK_DEFINE(acq_stack, 4096);
-K_THREAD_STACK_DEFINE(usb_stack, 4096);
+K_THREAD_STACK_DEFINE(ble_stack, 4096);
 K_THREAD_STACK_DEFINE(led_stack, 4096);
 K_THREAD_STACK_DEFINE(log_stack, 4096);
 K_THREAD_STACK_DEFINE(imu_stack, 4096);
 
 static struct k_thread acq_thread_data;
-static struct k_thread usb_thread_data;
+static struct k_thread ble_thread_data;
 static struct k_thread led_thread_data;
 static struct k_thread log_thread_data;
 static struct k_thread imu_thread_data;
@@ -56,7 +56,7 @@ static uint8_t computeChecksum(const Packet &p)
  * Thread entry functions
  * ------------------------------------------------------------------------- */
 
-static void usb_writer_thread(void *, void *, void *)
+static void ble_writer_thread(void *, void *, void *)
 {
     EmgSamplePacket out_batch;
     ImuSamplePacket imu_packet;
@@ -75,15 +75,21 @@ static void usb_writer_thread(void *, void *, void *)
 
         /* Drain EMG first: it is higher-rate and the queue is shallower. */
         while (k_msgq_get(&emg_queue, &out_batch, K_NO_WAIT) == 0) {
-            usb_cdc::print(
-                reinterpret_cast<const char *>(out_batch.samples),
-                sizeof(out_batch.samples)
-            );
+            int send_ret = ble_nus_send_stream(
+                reinterpret_cast<const uint8_t *>(out_batch.samples),
+                sizeof(out_batch.samples));
+            if (send_ret && send_ret != -ENOTCONN) {
+                LOG_WRN("EMG BLE send dropped: %d", send_ret);
+            }
         }
 
         while (k_msgq_get(&imu_queue, &imu_packet, K_NO_WAIT) == 0) {
-            usb_cdc::print(reinterpret_cast<const char *>(&imu_packet),
-                           sizeof(imu_packet));
+            int send_ret = ble_nus_send_stream(
+                reinterpret_cast<const uint8_t *>(&imu_packet),
+                sizeof(imu_packet));
+            if (send_ret && send_ret != -ENOTCONN) {
+                LOG_WRN("IMU BLE send dropped: %d", send_ret);
+            }
         }
 
         events[0].state = K_POLL_STATE_NOT_READY;
@@ -181,10 +187,10 @@ void threads_setup(void)
     );
 
     k_thread_create(
-        &usb_thread_data,
-        usb_stack,
-        K_THREAD_STACK_SIZEOF(usb_stack),
-        usb_writer_thread,
+        &ble_thread_data,
+        ble_stack,
+        K_THREAD_STACK_SIZEOF(ble_stack),
+        ble_writer_thread,
         NULL, NULL, NULL,
         5,
         0,

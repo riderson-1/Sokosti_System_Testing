@@ -14,9 +14,8 @@ target_sources(app PRIVATE
     app/src/main.cpp
     drivers/bhi360/bhi360_driver.cpp
     app/src/threads.cpp
-    app/src/usb/usb_cdc.cpp
+    app/src/ble/ble_nus.cpp
     drivers/ads1299/ads1299_driver.cpp
-    app/src/usb/sample_usbd_init.c
     drivers/ads1299/ads1299_configs.cpp
 )
 
@@ -27,7 +26,7 @@ file(GLOB BHY2_SOURCES
 target_sources(app PRIVATE ${BHY2_SOURCES})
 target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/app/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/usb
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/ble
     ${CMAKE_CURRENT_SOURCE_DIR}/drivers/ads1299
     ${CMAKE_CURRENT_SOURCE_DIR}/drivers/bhi360
     ${CMAKE_CURRENT_SOURCE_DIR}/drivers/bhi360/BHY2-Sensor-API

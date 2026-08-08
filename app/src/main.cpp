@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief ADS1299 EMG acquisition entry point, streaming CSV over USB CDC-ACM.
+ * @brief ADS1299 EMG acquisition entry point, streaming binary data over BLE NUS.
  * @version 0.2
  * @date 2026-07-08
  */
@@ -20,7 +20,7 @@
 
 #include "ads1299_definitions.h"
 #include "ads1299_driver.hpp"
-#include "usb_cdc.hpp"
+#include "ble/ble_nus.hpp"
 #include "ads1299_configs.hpp"
 #include "threads.hpp"
 #include "bhi360_driver.hpp"
@@ -73,16 +73,15 @@ int main(void)
     uint8_t id = 0;
 
     // ---------------------------------------
-    // USB CDC (host communication)
+    // Bluetooth NUS (host communication)
     // ---------------------------------------
 
-    ret = usb_cdc::init();
+    ret = ble_nus_init();
     if (ret != 0) {
-        LOG_ERR("USB CDC init failed: %d", ret);
+        LOG_ERR("BLE NUS init failed: %d", ret);
         return 0;
     }
 
-    k_msleep(100);
     LOG_INF("ADS1299 internal test signal capture starting...");
 
     // ---------------------------------------
@@ -122,12 +121,6 @@ int main(void)
         LOG_ERR("ADS register dump failed: %d", ret);
         return 0;
     }
-
-    // ret = ads.dumpTestRegistersUsb();
-    // if (ret) {
-    //     LOG_ERR("ADS register dump failed: %d", ret);
-    //     return 0;
-    // }
 
     ret = ads.startContinuousRead();
     if (ret) {

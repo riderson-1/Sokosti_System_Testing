@@ -112,7 +112,6 @@ public:
     int configure(const ADS1299Settings &cfg);
 
     int dumpTestRegisters();
-    int dumpTestRegistersUsb();
 
     /* streaming */
     int stopContinuousRead();

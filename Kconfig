@@ -1,4 +1,1 @@
-# /home/karl/nordic/myApps/sokosti_system_integration_test/Kconfig
-rsource "app/src/usb/Kconfig.sample_usbd"
-
 source "Kconfig.zephyr"

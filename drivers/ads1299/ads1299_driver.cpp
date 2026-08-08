@@ -6,7 +6,6 @@
  */
 
 #include "ads1299_driver.hpp"
-#include "usb_cdc.hpp"
 
 LOG_MODULE_REGISTER(ads1299_driver, LOG_LEVEL_DBG);
 
@@ -353,54 +352,6 @@ int ADS1299::dumpTestRegisters()
     
     for (uint8_t addr = 0x00; addr <= 0x17; addr++) {
         LOG_INF("0x%02X  %-13s 0x%02X", addr, registerName(addr), regs[addr]);
-    }
-
-    return 0;
-}
-
-int ADS1299::dumpTestRegistersUsb()
-{
-    int ret;
-    uint8_t regs[0x18];
-
-    for (uint8_t addr = 0x00; addr <= 0x17; addr++) {
-        ret = readRegister(addr, &regs[addr]);
-        if (ret) {
-            char errbuf[64];
-            int n = snprintf(errbuf, sizeof(errbuf),
-                              "REG 0x%02X read failed: %d\r\n", addr, ret);
-            if (n > 0) {
-                usb_cdc::print(errbuf, (n < (int)sizeof(errbuf)) ? n : sizeof(errbuf) - 1);
-            }
-            return ret;
-        }
-        k_msleep(2);
-    }
-
-    char line[96];
-    int n;
-
-    n = snprintf(line, sizeof(line), "ADS1299 Register Dump:\r\n");
-    if (n > 0) {
-        usb_cdc::print(line, (n < (int)sizeof(line)) ? n : sizeof(line) - 1);
-    }
-
-    n = snprintf(line, sizeof(line), "ADDR  NAME          VALUE\r\n");
-    if (n > 0) {
-        usb_cdc::print(line, (n < (int)sizeof(line)) ? n : sizeof(line) - 1);
-    }
-
-    n = snprintf(line, sizeof(line), "----  ----------    ----\r\n");
-    if (n > 0) {
-        usb_cdc::print(line, (n < (int)sizeof(line)) ? n : sizeof(line) - 1);
-    }
-
-    for (uint8_t addr = 0x00; addr <= 0x17; addr++) {
-        n = snprintf(line, sizeof(line), "0x%02X  %-13s 0x%02X\r\n",
-                     addr, registerName(addr), regs[addr]);
-        if (n > 0) {
-            usb_cdc::print(line, (n < (int)sizeof(line)) ? n : sizeof(line) - 1);
-        }
     }
 
     return 0;
