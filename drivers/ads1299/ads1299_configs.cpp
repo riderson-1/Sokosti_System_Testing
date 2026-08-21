@@ -41,7 +41,7 @@ static ADS1299Settings AllChannelsMeasurement()
     for (size_t i = 0; i < ADS_NUM_CHANNELS; i++)
     {
         cfg.channel[i].powerDown = 0;
-        cfg.channel[i].gain = 8;
+        cfg.channel[i].gain = 1;
         cfg.channel[i].mux = 0;
         cfg.channel[i].srb2 = 0;
         
