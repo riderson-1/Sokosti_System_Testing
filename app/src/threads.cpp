@@ -19,7 +19,7 @@ LOG_MODULE_REGISTER(threads, LOG_LEVEL_DBG);
 /* ---------------------------------------------------------------------------
  * Message queue - EmgSamplePacket conduit between acquisition and USB writer
  * ------------------------------------------------------------------------- */
-K_MSGQ_DEFINE(emg_queue, sizeof(EmgSamplePacket), 4, 4);
+K_MSGQ_DEFINE(emg_queue, sizeof(EmgSamplePacket), 1, 4);
 K_MSGQ_DEFINE(imu_queue, sizeof(ImuSamplePacket), 8, 8);
 
 /* ---------------------------------------------------------------------------
@@ -73,13 +73,16 @@ static void ble_writer_thread(void *, void *, void *)
             continue;
         }
 
-        /* Drain EMG first: it is higher-rate and the queue is shallower. */
-        while (k_msgq_get(&emg_queue, &out_batch, K_NO_WAIT) == 0) {
-            int send_ret = ble_nus_send_stream(
-                reinterpret_cast<const uint8_t *>(out_batch.samples),
-                sizeof(out_batch.samples));
-            if (send_ret && send_ret != -ENOTCONN) {
-                LOG_WRN("EMG BLE send dropped: %d", send_ret);
+        /* Fair interleaving: drain one EMG batch, then drain IMU packets,
+         * ensuring IMU is never starved by high-rate EMG. */
+        if (k_msgq_get(&emg_queue, &out_batch, K_NO_WAIT) == 0) {
+            for (size_t i = 0; i < ARRAY_SIZE(out_batch.samples); i++) {
+                const SamplePacket &pkt = out_batch.samples[i];
+                int send_ret = ble_nus_send_stream(
+                    reinterpret_cast<const uint8_t *>(&pkt), sizeof(pkt));
+                if (send_ret && send_ret != -ENOTCONN) {
+                    LOG_WRN("EMG BLE send dropped: %d", send_ret);
+                }
             }
         }
 
@@ -92,8 +95,11 @@ static void ble_writer_thread(void *, void *, void *)
             }
         }
 
-        events[0].state = K_POLL_STATE_NOT_READY;
-        events[1].state = K_POLL_STATE_NOT_READY;
+        /* Only clear a wakeup flag if its queue is actually empty. */
+        if (k_msgq_num_used_get(&emg_queue) == 0)
+            events[0].state = K_POLL_STATE_NOT_READY;
+        if (k_msgq_num_used_get(&imu_queue) == 0)
+            events[1].state = K_POLL_STATE_NOT_READY;
     }
 }
 
@@ -134,9 +140,12 @@ static void acquisition_thread(void *, void *, void *)
         batch_count++;
 
         if (batch_count == 8) {   // BATCH_SIZE
-            int qret = k_msgq_put(&emg_queue, &batch, K_NO_WAIT);
-            if (qret != 0) {
-                /* Queue full — USB cannot keep up; silently drop. */
+            /* Non-blocking put with purge-on-full ensures the queue always
+             * holds the freshest batch without ever blocking the acquisition
+             * thread or missing DRDY interrupts. */
+            if (k_msgq_put(&emg_queue, &batch, K_NO_WAIT) != 0) {
+                k_msgq_purge(&emg_queue);
+                (void)k_msgq_put(&emg_queue, &batch, K_NO_WAIT);
             }
             batch_count = 0;
         }

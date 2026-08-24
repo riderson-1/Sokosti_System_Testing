@@ -60,12 +60,39 @@ static ADS1299Settings AllChannelsMeasurement()
     return cfg;
 }
 
+static ADS1299Settings AllChannelsLowSpeed()
+{
+    ADS1299Settings cfg;
+    
+    for (size_t i = 0; i < ADS_NUM_CHANNELS; i++)
+    {
+        cfg.channel[i].powerDown = 0;
+        cfg.channel[i].gain = 1;
+        cfg.channel[i].mux = 0;
+        cfg.channel[i].srb2 = 0;
+        
+    }
+    
+    cfg.device.nDaisyChain = 0;
+    cfg.device.clkEn = 0;
+
+    cfg.device.samplingRate = 500;
+    cfg.device.nPdBias = 1;
+    cfg.device.nPdRefBuf = 1;
+    cfg.device.biasRefInt = 1;
+
+    cfg.device.intCal = 0;
+
+    return cfg;
+}
+
 ADS1299Settings makeAdsSettings(AdsPreset preset)
 {
     switch (preset) {
-        case AdsPreset::DefaultSettings:    return DefaultSettings();
-        case AdsPreset::SingleChannelTest:  return SingleChannelTest();
+        case AdsPreset::DefaultSettings:        return DefaultSettings();
+        case AdsPreset::SingleChannelTest:      return SingleChannelTest();
         case AdsPreset::AllChannelsMeasurement: return AllChannelsMeasurement();
+        case AdsPreset::AllChannelsLowSpeed:    return AllChannelsLowSpeed();
     }
     return DefaultSettings();  // unreachable, keeps compiler happy without -Wswitch complaints masking a real bug
 }

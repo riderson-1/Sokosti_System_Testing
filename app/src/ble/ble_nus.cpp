@@ -71,6 +71,18 @@ void connected(struct bt_conn *conn, uint8_t err)
 	if (err && err != -EALREADY) {
 		LOG_WRN("MTU exchange request failed: %d", err);
 	}
+
+	/* Request fast connection parameters for high-throughput streaming:
+	 * 7.5 - 15 ms connection interval (6 - 12 units of 1.25 ms),
+	 * 0 slave latency (so peripheral responds every event without skipping),
+	 * 1000 ms supervision timeout. */
+	struct bt_le_conn_param param = BT_LE_CONN_PARAM_INIT(
+		6,                                    /* min interval: 6 * 1.25 ms = 7.5 ms  */
+		12,                                   /* max interval: 12 * 1.25 ms = 15.0 ms */
+		0,                                    /* slave latency = 0 (critical)        */
+		BT_GAP_MS_TO_CONN_TIMEOUT(1000));     /* supervision timeout                 */
+	(void)bt_conn_le_param_update(conn, &param);
+
 	LOG_INF("BLE connected");
 }
 
