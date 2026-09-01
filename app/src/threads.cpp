@@ -13,6 +13,7 @@
 
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/sys/atomic.h>
 
 #include <string.h>
 #include <math.h>
@@ -29,6 +30,32 @@ LOG_MODULE_REGISTER(threads, LOG_LEVEL_DBG);
  * ------------------------------------------------------------------------- */
 K_MSGQ_DEFINE(emg_queue, sizeof(EmgSamplePacket), 1, 4);
 K_MSGQ_DEFINE(imu_queue, sizeof(ImuSamplePacket), 8, 8);
+
+/* ---------------------------------------------------------------------------
+ * BLE writer tunables (see ble_streaming_debug_history.md, steps 1 & 2)
+ *
+ * BLE_EMG_GROUP_SAMPLES: samples concatenated into one transport_send() call
+ * when BLE is the active transport. At BATCH_SIZE=8 and 500 sps, a group of
+ * 8 (456 B, under the 498 B MTU) yields ~62.5 notifications/s, well under the
+ * observed ~128 notifications/s link ceiling at the 7.5 ms / latency-0
+ * connection parameters. USB has no per-notification overhead, so it keeps
+ * sending one SamplePacket (57 B) at a time regardless of this constant.
+ *
+ * MAX_IMU_PACKETS_PER_WAKEUP: caps how many queued IMU packets are drained
+ * in a single writer-thread wakeup. Without this cap, a backlog in
+ * imu_queue (depth 8) can be flushed in one burst, consuming most/all of
+ * CONFIG_BT_BUF_ACL_TX_COUNT ACL TX buffers before EMG gets a turn.
+ * ------------------------------------------------------------------------- */
+static constexpr size_t BLE_EMG_GROUP_SAMPLES = 8;
+static constexpr size_t MAX_IMU_PACKETS_PER_WAKEUP = 4;
+
+/* Instrumentation: per-stream success/-ENOMEM counts, drained by live_log()
+ * so scheduling share between EMG and IMU can be verified against the
+ * hypothesis in ble_streaming_debug_history.md §3a rather than assumed. */
+static atomic_t emg_send_ok      = ATOMIC_INIT(0);
+static atomic_t emg_send_enomem  = ATOMIC_INIT(0);
+static atomic_t imu_send_ok      = ATOMIC_INIT(0);
+static atomic_t imu_send_enomem  = ATOMIC_INIT(0);
 
 /* ---------------------------------------------------------------------------
  * Thread stacks and control blocks
@@ -95,24 +122,51 @@ static void ble_writer_thread(void *, void *, void *)
             continue;
         }
 
-        /* Fair interleaving: drain one EMG batch, then drain IMU packets,
-         * ensuring IMU is never starved by high-rate EMG. */
+        /* Fair interleaving: drain one EMG batch, then drain up to
+         * MAX_IMU_PACKETS_PER_WAKEUP IMU packets, ensuring neither stream
+         * can monopolize the ACL TX buffers in a single wakeup. */
         if (k_msgq_get(&emg_queue, &out_batch, K_NO_WAIT) == 0) {
-            for (size_t i = 0; i < ARRAY_SIZE(out_batch.samples); i++) {
-                const SamplePacket &pkt = out_batch.samples[i];
-                int send_ret = transport_send(
-                    reinterpret_cast<const uint8_t *>(&pkt), sizeof(pkt));
-                if (send_ret && send_ret != -ENOTCONN) {
+            /* Group samples into one transport_send() call at a time.
+             * USB: group size 1 (unchanged, per-sample, no overhead to save).
+             * BLE: group size BLE_EMG_GROUP_SAMPLES, cutting notification
+             * count roughly 4x so EMG demand fits the link's ~128 notif/s
+             * ceiling instead of needing 500/s. */
+            const bool ble_active = !usb_cdc::connected();
+            const size_t group_samples =
+                ble_active ? BLE_EMG_GROUP_SAMPLES : 1;
+            constexpr size_t total_samples = ARRAY_SIZE(out_batch.samples);
+            static_assert(total_samples % BLE_EMG_GROUP_SAMPLES == 0,
+                          "BATCH_SIZE must be a multiple of "
+                          "BLE_EMG_GROUP_SAMPLES");
+
+            for (size_t i = 0; i < total_samples; i += group_samples) {
+                const uint8_t *group_ptr = reinterpret_cast<const uint8_t *>(
+                    &out_batch.samples[i]);
+                const size_t group_len = group_samples * sizeof(SamplePacket);
+
+                int send_ret = transport_send(group_ptr, group_len);
+                if (send_ret == 0) {
+                    atomic_inc(&emg_send_ok);
+                } else if (send_ret == -ENOMEM) {
+                    atomic_inc(&emg_send_enomem);
+                } else if (send_ret != -ENOTCONN) {
                     LOG_WRN("EMG send dropped: %d", send_ret);
                 }
             }
         }
 
-        while (k_msgq_get(&imu_queue, &imu_packet, K_NO_WAIT) == 0) {
+        for (size_t sent = 0; sent < MAX_IMU_PACKETS_PER_WAKEUP; sent++) {
+            if (k_msgq_get(&imu_queue, &imu_packet, K_NO_WAIT) != 0) {
+                break;
+            }
             int send_ret = transport_send(
                 reinterpret_cast<const uint8_t *>(&imu_packet),
                 sizeof(imu_packet));
-            if (send_ret && send_ret != -ENOTCONN) {
+            if (send_ret == 0) {
+                atomic_inc(&imu_send_ok);
+            } else if (send_ret == -ENOMEM) {
+                atomic_inc(&imu_send_enomem);
+            } else if (send_ret != -ENOTCONN) {
                 LOG_WRN("IMU send dropped: %d", send_ret);
             }
         }
@@ -246,11 +300,30 @@ static void led_toggling(void *, void *, void *)
 
 static void live_log(void *, void *, void *)
 {
+    /* Snapshot of the atomic counters at the previous print, so we report
+     * a per-500ms delta rather than a lifetime total. */
+    uint32_t emg_ok_prev = 0, emg_enomem_prev = 0;
+    uint32_t imu_ok_prev = 0, imu_enomem_prev = 0;
+
     while (true) {
         k_sleep(K_MSEC(500));
         int32_t ch1 = last_ch1_code;
         LOG_INF("ch1 code = %d  (%.2f uV)", ch1,
                 (double)ch1 * 5.0 / 8.0 / 8388608.0 * 1e6);
+
+        uint32_t emg_ok = atomic_get(&emg_send_ok);
+        uint32_t emg_enomem = atomic_get(&emg_send_enomem);
+        uint32_t imu_ok = atomic_get(&imu_send_ok);
+        uint32_t imu_enomem = atomic_get(&imu_send_enomem);
+
+        LOG_INF("BLE TX/500ms: EMG ok=%u enomem=%u | IMU ok=%u enomem=%u",
+                emg_ok - emg_ok_prev, emg_enomem - emg_enomem_prev,
+                imu_ok - imu_ok_prev, imu_enomem - imu_enomem_prev);
+
+        emg_ok_prev = emg_ok;
+        emg_enomem_prev = emg_enomem;
+        imu_ok_prev = imu_ok;
+        imu_enomem_prev = imu_enomem;
     }
 }
 

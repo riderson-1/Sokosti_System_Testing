@@ -262,7 +262,12 @@ static bool test_bhi360_spi(void)
 	 packet.data_len = 10;
 	 memcpy(packet.data, info->data_ptr, packet.data_len);
 	 packet.checksum = checksum(packet);
-	 (void)k_msgq_put(&imu_queue, &packet, K_NO_WAIT);
+	 /* Latest-wins: if the queue is full, purge the stale backlog and keep
+	  * only the freshest packet, so IMU never accumulates old data. */
+	 if (k_msgq_put(&imu_queue, &packet, K_NO_WAIT) != 0) {
+		 k_msgq_purge(&imu_queue);
+		 (void)k_msgq_put(&imu_queue, &packet, K_NO_WAIT);
+	 }
  }
 
  static void parse_linear_acceleration(const struct bhy2_fifo_parse_data_info *info, void *)
@@ -275,7 +280,12 @@ static bool test_bhi360_spi(void)
 	 packet.data_len = 6;
 	 memcpy(packet.data, info->data_ptr, packet.data_len);
 	 packet.checksum = checksum(packet);
-	 (void)k_msgq_put(&imu_queue, &packet, K_NO_WAIT);
+	 /* Latest-wins: if the queue is full, purge the stale backlog and keep
+	  * only the freshest packet, so IMU never accumulates old data. */
+	 if (k_msgq_put(&imu_queue, &packet, K_NO_WAIT) != 0) {
+		 k_msgq_purge(&imu_queue);
+		 (void)k_msgq_put(&imu_queue, &packet, K_NO_WAIT);
+	 }
  }
 
  static void parse_meta_event(const struct bhy2_fifo_parse_data_info *info, void *)
@@ -333,8 +343,12 @@ static bool test_bhi360_spi(void)
 		 return false;
 	 }
 	 print_api_error(bhy2_update_virtual_sensor_list(&imu->bhy2), &imu->bhy2);
-	 print_api_error(bhy2_set_virt_sensor_cfg(QUAT_SENSOR_ID, 100.0f, 0, &imu->bhy2), &imu->bhy2);
-	 print_api_error(bhy2_set_virt_sensor_cfg(LACC_SENSOR_ID, 100.0f, 0, &imu->bhy2), &imu->bhy2);
+	 /* IMU ODR reduced from 100 Hz to 50 Hz to free BLE bandwidth for EMG.
+	  * At 50 Hz the IMU uses ~50 notifications/s; combined with 8-sample EMG
+	  * grouping (~62.5 notif/s) the total ~112.5 notif/s fits under the
+	  * ~128 notif/s link ceiling. */
+	 print_api_error(bhy2_set_virt_sensor_cfg(QUAT_SENSOR_ID, 50.0f, 0, &imu->bhy2), &imu->bhy2);
+	 print_api_error(bhy2_set_virt_sensor_cfg(LACC_SENSOR_ID, 50.0f, 0, &imu->bhy2), &imu->bhy2);
 	 print_api_error(bhy2_register_fifo_parse_callback(BHY2_SYS_ID_META_EVENT, parse_meta_event, imu, &imu->bhy2), &imu->bhy2);
 	 if (bhy2_is_sensor_available(QUAT_SENSOR_ID, &imu->bhy2)) print_api_error(bhy2_register_fifo_parse_callback(QUAT_SENSOR_ID, parse_quaternion, imu, &imu->bhy2), &imu->bhy2);
 	 if (bhy2_is_sensor_available(LACC_SENSOR_ID, &imu->bhy2)) print_api_error(bhy2_register_fifo_parse_callback(LACC_SENSOR_ID, parse_linear_acceleration, imu, &imu->bhy2), &imu->bhy2);
