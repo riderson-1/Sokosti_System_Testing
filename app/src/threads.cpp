@@ -14,6 +14,8 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/fs/fs.h>
+#include <zephyr/storage/disk_access.h>
 
 #include <string.h>
 #include <math.h>
@@ -31,27 +33,19 @@ LOG_MODULE_REGISTER(threads, LOG_LEVEL_DBG);
 K_MSGQ_DEFINE(emg_queue, sizeof(EmgSamplePacket), 1, 4);
 K_MSGQ_DEFINE(imu_queue, sizeof(ImuSamplePacket), 8, 8);
 
+// SD backup queues (separates streaming pipeline from file I/O pipeline)
+K_MSGQ_DEFINE(emg_sd_queue, sizeof(EmgSamplePacket), 8, 4);
+K_MSGQ_DEFINE(imu_sd_queue, sizeof(ImuSamplePacket), 16, 4);
+
+volatile bool recording_active = true;
+
 /* ---------------------------------------------------------------------------
  * BLE writer tunables (see ble_streaming_debug_history.md, steps 1 & 2)
- *
- * BLE_EMG_GROUP_SAMPLES: samples concatenated into one transport_send() call
- * when BLE is the active transport. At BATCH_SIZE=8 and 500 sps, a group of
- * 8 (456 B, under the 498 B MTU) yields ~62.5 notifications/s, well under the
- * observed ~128 notifications/s link ceiling at the 7.5 ms / latency-0
- * connection parameters. USB has no per-notification overhead, so it keeps
- * sending one SamplePacket (57 B) at a time regardless of this constant.
- *
- * MAX_IMU_PACKETS_PER_WAKEUP: caps how many queued IMU packets are drained
- * in a single writer-thread wakeup. Without this cap, a backlog in
- * imu_queue (depth 8) can be flushed in one burst, consuming most/all of
- * CONFIG_BT_BUF_ACL_TX_COUNT ACL TX buffers before EMG gets a turn.
  * ------------------------------------------------------------------------- */
 static constexpr size_t BLE_EMG_GROUP_SAMPLES = 8;
 static constexpr size_t MAX_IMU_PACKETS_PER_WAKEUP = 4;
 
-/* Instrumentation: per-stream success/-ENOMEM counts, drained by live_log()
- * so scheduling share between EMG and IMU can be verified against the
- * hypothesis in ble_streaming_debug_history.md §3a rather than assumed. */
+/* Instrumentation: per-stream success/-ENOMEM counts, drained by live_log() */
 static atomic_t emg_send_ok      = ATOMIC_INIT(0);
 static atomic_t emg_send_enomem  = ATOMIC_INIT(0);
 static atomic_t imu_send_ok      = ATOMIC_INIT(0);
@@ -65,12 +59,33 @@ K_THREAD_STACK_DEFINE(ble_stack, 4096);
 K_THREAD_STACK_DEFINE(led_stack, 4096);
 K_THREAD_STACK_DEFINE(log_stack, 4096);
 K_THREAD_STACK_DEFINE(imu_stack, 4096);
+K_THREAD_STACK_DEFINE(sd_stack, 4096);
 
 static struct k_thread acq_thread_data;
 static struct k_thread ble_thread_data;
 static struct k_thread led_thread_data;
 static struct k_thread log_thread_data;
 static struct k_thread imu_thread_data;
+static struct k_thread sd_thread_data;
+
+// SD mount configuration
+static struct fs_mount_t sd_mount = {
+    .type = FS_FATFS,
+    .fs_impl_sec_to_date = NULL,
+    .mnt_point = "/SD:",
+};
+
+// Button 1 definition (sw0 alias)
+static const struct gpio_dt_spec button_1 = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
+static struct gpio_callback button_cb_data;
+
+void button_pressed_cb(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+{
+    if (recording_active) {
+        recording_active = false;
+        LOG_INF("Button 1 pressed! Stopping measurement and safely unmounting SD card...");
+    }
+}
 
 /* ---------------------------------------------------------------------------
  * Helpers
@@ -126,11 +141,12 @@ static void ble_writer_thread(void *, void *, void *)
          * MAX_IMU_PACKETS_PER_WAKEUP IMU packets, ensuring neither stream
          * can monopolize the ACL TX buffers in a single wakeup. */
         if (k_msgq_get(&emg_queue, &out_batch, K_NO_WAIT) == 0) {
-            /* Group samples into one transport_send() call at a time.
-             * USB: group size 1 (unchanged, per-sample, no overhead to save).
-             * BLE: group size BLE_EMG_GROUP_SAMPLES, cutting notification
-             * count roughly 4x so EMG demand fits the link's ~128 notif/s
-             * ceiling instead of needing 500/s. */
+            // Backup copy to SD card logging pipeline
+            if (recording_active) {
+                (void)k_msgq_put(&emg_sd_queue, &out_batch, K_NO_WAIT);
+            }
+
+            /* Group samples into one transport_send() call at a time. */
             const bool ble_active = !usb_cdc::connected();
             const size_t group_samples =
                 ble_active ? BLE_EMG_GROUP_SAMPLES : 1;
@@ -159,6 +175,11 @@ static void ble_writer_thread(void *, void *, void *)
             if (k_msgq_get(&imu_queue, &imu_packet, K_NO_WAIT) != 0) {
                 break;
             }
+            // Backup copy to SD card logging pipeline
+            if (recording_active) {
+                (void)k_msgq_put(&imu_sd_queue, &imu_packet, K_NO_WAIT);
+            }
+
             int send_ret = transport_send(
                 reinterpret_cast<const uint8_t *>(&imu_packet),
                 sizeof(imu_packet));
@@ -230,18 +251,6 @@ static void acquisition_thread(void *, void *, void *)
 
 static void led_toggling(void *, void *, void *)
 {
-    /*
-     * Status LED thread (hardware PWM).
-     *
-     * LED0 (blue) — transport status:
-     *   - slow blink  : BLE advertising, no connection
-     *   - solid on    : BLE connected
-     *   - breathing   : USB host connected (CDC DTR asserted)
-     *
-     * LED1 (yellow) — measurement status:
-     *   - breathing PWM fade (never fully off) while the ADS1299
-     *     acquisition thread and the IMU thread are running.
-     */
     static const struct pwm_dt_spec led_blue =
         PWM_DT_SPEC_GET(DT_ALIAS(led0));
     static const struct pwm_dt_spec led_yellow =
@@ -252,16 +261,10 @@ static void led_toggling(void *, void *, void *)
         return;
     }
 
-    /* PWM period from the devicetree node (10 ms -> 100 Hz). */
     const uint32_t period_ns = led_blue.period;
     const uint32_t max_pulse_ns = period_ns;   /* 100 % duty */
     const uint32_t min_pulse_ns = period_ns / 20; /* ~5 % floor */
 
-    /*
-     * Breathing parameters. The fade uses a raised-cosine (half-wave
-     * rectified sine) profile: smooth at both ends, never fully dark.
-     *   level = (1 - cos(pi * phase)) / 2   in [0, 1]
-     */
     const uint32_t breath_period_ms = 2400; /* full bright->dark cycle */
     const uint32_t tick_ms = 20;            /* LED update tick         */
 
@@ -272,7 +275,6 @@ static void led_toggling(void *, void *, void *)
         float phase = (float)(t_ms % breath_period_ms) /
                       (float)breath_period_ms;
         float level = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * phase));
-        /* Floor so the LED never goes fully off. */
         float level_floored = 0.00f + 1.0f * level;
 
         uint32_t pulse_ns = min_pulse_ns +
@@ -280,18 +282,20 @@ static void led_toggling(void *, void *, void *)
 
         /* ---- Blue LED: transport state ---- */
         if (usb_cdc::connected()) {
-            /* Breathing pulse. */
             pwm_set_pulse_dt(&led_blue, pulse_ns);
         } else if (ble_nus_connected()) {
             pwm_set_pulse_dt(&led_blue, max_pulse_ns);  /* solid on */
         } else {
-            /* Slow blink: advertising. 500 ms on / 500 ms off. */
             pwm_set_pulse_dt(&led_blue,
                              ((t_ms / 500) % 2) ? max_pulse_ns : 0U);
         }
 
         /* ---- Yellow LED: measurement breathing fade ---- */
-        pwm_set_pulse_dt(&led_yellow, pulse_ns);
+        if (recording_active) {
+            pwm_set_pulse_dt(&led_yellow, pulse_ns);
+        } else {
+            pwm_set_pulse_dt(&led_yellow, 0U); // Stop pulsing completely
+        }
 
         k_sleep(K_MSEC(tick_ms));
         t_ms += tick_ms;
@@ -300,8 +304,6 @@ static void led_toggling(void *, void *, void *)
 
 static void live_log(void *, void *, void *)
 {
-    /* Snapshot of the atomic counters at the previous print, so we report
-     * a per-500ms delta rather than a lifetime total. */
     uint32_t emg_ok_prev = 0, emg_enomem_prev = 0;
     uint32_t imu_ok_prev = 0, imu_enomem_prev = 0;
 
@@ -335,11 +337,105 @@ static void imu_thread(void *, void *, void *)
     }
 }
 
+// ---------------------------------------------------------------------------
+// SD Card Writer Thread
+// ---------------------------------------------------------------------------
+static void sd_writer_thread_entry(void *, void *, void *)
+{
+    int ret;
+    struct fs_file_t emg_file;
+    struct fs_file_t imu_file;
+
+    fs_file_t_init(&emg_file);
+    fs_file_t_init(&imu_file);
+
+    // Initialize SD Disk Interface
+    if (disk_access_init("SD") != 0) {
+        LOG_ERR("SD card disk interface registration failed!");
+        return;
+    }
+
+    // Mount FATFS
+    ret = fs_mount(&sd_mount);
+    if (ret != 0) {
+        LOG_ERR("Failed to mount SD card filesystem: %d", ret);
+        return;
+    }
+    LOG_INF("SD Card filesystem mounted successfully.");
+
+    // Open logs in raw binary format append mode
+    ret = fs_open(&emg_file, "/SD:/emg_log.bin", FS_O_CREATE | FS_O_WRITE | FS_O_APPEND);
+    if (ret < 0) {
+        LOG_ERR("Failed to open /SD:/emg_log.bin: %d", ret);
+    }
+    ret = fs_open(&imu_file, "/SD:/imu_log.bin", FS_O_CREATE | FS_O_WRITE | FS_O_APPEND);
+    if (ret < 0) {
+        LOG_ERR("Failed to open /SD:/imu_log.bin: %d", ret);
+    }
+
+    EmgSamplePacket emg_pkt;
+    ImuSamplePacket imu_pkt;
+    uint32_t write_counter = 0;
+
+    while (recording_active) {
+        bool idle = true;
+
+        if (k_msgq_get(&emg_sd_queue, &emg_pkt, K_NO_WAIT) == 0) {
+            fs_write(&emg_file, &emg_pkt, sizeof(EmgSamplePacket));
+            idle = false;
+            write_counter++;
+        }
+
+        if (k_msgq_get(&imu_sd_queue, &imu_pkt, K_NO_WAIT) == 0) {
+            fs_write(&imu_file, &imu_pkt, sizeof(ImuSamplePacket));
+            idle = false;
+            write_counter++;
+        }
+
+        // Periodic flush to prevent loss of data blocks in case of sudden power cut
+        if (write_counter >= 50) {
+            fs_sync(&emg_file);
+            fs_sync(&imu_file);
+            write_counter = 0;
+        }
+
+        if (idle) {
+            k_sleep(K_MSEC(10)); // Rest when queue is dry to allow other lower threads to execute
+        }
+    }
+
+    // --- SHUTDOWN DRAIN (Safely write anything remaining in queues) ---
+    LOG_INF("Draining remaining logs to SD card before safe eject...");
+    while (k_msgq_get(&emg_sd_queue, &emg_pkt, K_NO_WAIT) == 0) {
+        fs_write(&emg_file, &emg_pkt, sizeof(EmgSamplePacket));
+    }
+    while (k_msgq_get(&imu_sd_queue, &imu_pkt, K_NO_WAIT) == 0) {
+        fs_write(&imu_file, &imu_pkt, sizeof(ImuSamplePacket));
+    }
+
+    fs_close(&emg_file);
+    fs_close(&imu_file);
+
+    fs_unmount(&sd_mount);
+    LOG_INF("SD Card filesystem successfully unmounted. It is now safe to disconnect.");
+}
+
 /* ---------------------------------------------------------------------------
- * threads_setup — create all four RTOS threads, called once from main()
+ * threads_setup — create all five RTOS threads, called once from main()
  * ------------------------------------------------------------------------- */
 void threads_setup(void)
 {
+    // Configure Button 1 interrupt input (sw0 node)
+    if (!gpio_is_ready_dt(&button_1)) {
+        LOG_ERR("Button 1 GPIO hardware not ready!");
+    } else {
+        gpio_pin_configure_dt(&button_1, GPIO_INPUT);
+        gpio_pin_interrupt_configure_dt(&button_1, GPIO_INT_EDGE_TO_ACTIVE);
+        gpio_init_callback(&button_cb_data, button_pressed_cb, BIT(button_1.pin));
+        gpio_add_callback(button_1.port, &button_cb_data);
+        LOG_INF("Button 1 configured as Safe Eject Shutdown trigger");
+    }
+
     k_thread_create(
         &acq_thread_data,
         acq_stack,
@@ -391,6 +487,18 @@ void threads_setup(void)
         imu_thread,
         NULL, NULL, NULL,
         10,
+        0,
+        K_NO_WAIT
+    );
+
+    // Start SD writer backup thread
+    k_thread_create(
+        &sd_thread_data,
+        sd_stack,
+        K_THREAD_STACK_SIZEOF(sd_stack),
+        sd_writer_thread_entry,
+        NULL, NULL, NULL,
+        6, // Slightly lower than BLE stream thread to prioritize transmission
         0,
         K_NO_WAIT
     );

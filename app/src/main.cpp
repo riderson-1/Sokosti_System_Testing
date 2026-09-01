@@ -7,9 +7,6 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-// #include <zephyr/drivers/spi.h>
-// #include <zephyr/drivers/gpio.h>
-// #include <zephyr/drivers/pwm.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/logging/log.h>
 
@@ -165,10 +162,18 @@ int main(void)
 
 
     // ---------------------------------------
-    // main loop — transport arbitration
+    // main loop — transport arbitration & safety stop
     // ---------------------------------------
+    bool ads_conversions_running = true;
 
     while (true) {
+        // Safe backup shutdown: stop ADC hardware physical sampling when recording finishes
+        if (!recording_active && ads_conversions_running) {
+            ads_conversions_running = false;
+            ads.stopConversions();
+            LOG_INF("ADC Conversion stopped cleanly.");
+        }
+
         bool usb_now = usb_cdc::connected();
 
         if (usb_now != usb_active) {

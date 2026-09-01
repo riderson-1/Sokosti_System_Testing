@@ -60,6 +60,13 @@ struct ImuSamplePacket {
 extern struct k_msgq emg_queue;
 extern struct k_msgq imu_queue;
 
+// Backup SD logging queues
+extern struct k_msgq emg_sd_queue;
+extern struct k_msgq imu_sd_queue;
+
+// Global flag to coordinate safe shutdown
+extern volatile bool recording_active;
+
 /* ---------------------------------------------------------------------------
  * Thread setup — called once from main() after ADS initialisation
  * ------------------------------------------------------------------------- */
