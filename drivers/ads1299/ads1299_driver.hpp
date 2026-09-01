@@ -79,14 +79,12 @@ public:
      * @param reset_gpio  RESET pin spec
      * @param start_pin   START pin spec (held low; START command used instead)
      * @param drdy_pin    DRDY pin spec (falling-edge interrupt)
-     * @param led_pin     LED pin spec (heartbeat toggling)
      * @param ads_clk_pwm PWM clock spec (~2 MHz for ADS1299 external fCLK)
      */
     ADS1299(const struct spi_dt_spec &spi,
             const struct gpio_dt_spec &reset_gpio,
             const struct gpio_dt_spec &start_pin,
             const struct gpio_dt_spec &drdy_pin,
-            const struct gpio_dt_spec &led_pin,
             const struct pwm_dt_spec   &ads_clk_pwm);
 
     /**
@@ -154,7 +152,6 @@ private:
     struct gpio_dt_spec     reset_gpio_;
     struct gpio_dt_spec     start_pin_;
     struct gpio_dt_spec     drdy_pin_;
-    struct gpio_dt_spec     led_pin_;
     struct pwm_dt_spec      ads_clk_pwm_;
 
     static struct gpio_callback drdy_cb_data_;

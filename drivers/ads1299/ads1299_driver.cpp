@@ -13,13 +13,11 @@ ADS1299::ADS1299(const struct spi_dt_spec &spi,
                  const struct gpio_dt_spec &reset_gpio,
                  const struct gpio_dt_spec &start_pin,
                  const struct gpio_dt_spec &drdy_pin,
-                 const struct gpio_dt_spec &led_pin,
                  const struct pwm_dt_spec   &ads_clk_pwm)
     : spi_(spi),
       reset_gpio_(reset_gpio),
       start_pin_(start_pin),
       drdy_pin_(drdy_pin),
-      led_pin_(led_pin),
       ads_clk_pwm_(ads_clk_pwm)
 {
     for (auto &ch : settings.channel) {
@@ -479,16 +477,12 @@ int ADS1299::setupGpios()
 {
     int ret;
 
-    if (!gpio_is_ready_dt(&led_pin_) ||
-        !gpio_is_ready_dt(&reset_gpio_) ||
+    if (!gpio_is_ready_dt(&reset_gpio_) ||
         !gpio_is_ready_dt(&start_pin_) ||
         !gpio_is_ready_dt(&drdy_pin_)) {
         LOG_ERR("GPIO not ready");
         return -ENODEV;
     }
-
-    ret = gpio_pin_configure_dt(&led_pin_, GPIO_OUTPUT_INACTIVE);
-    if (ret) return ret;
 
     ret = gpio_pin_configure_dt(&reset_gpio_, GPIO_OUTPUT_INACTIVE);
     if (ret) return ret;

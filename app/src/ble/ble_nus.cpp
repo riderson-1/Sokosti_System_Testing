@@ -16,6 +16,7 @@ namespace {
 
 struct bt_conn *current_conn;
 bool notifications_enabled;
+bool advertising_active;
 struct k_mutex state_mutex;
 struct k_work_delayable adv_work;
 struct bt_gatt_exchange_params exchange_params;
@@ -36,10 +37,28 @@ void start_advertising(struct k_work *work)
 
 	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad),
 				  sd, ARRAY_SIZE(sd));
-	if (err) {
+	if (err == -EALREADY) {
+		advertising_active = true;
+	} else if (err) {
 		LOG_ERR("Advertising failed to start: %d", err);
 	} else {
+		advertising_active = true;
 		LOG_INF("Advertising as %s", CONFIG_BT_DEVICE_NAME);
+	}
+}
+
+void stop_advertising(void)
+{
+	if (!advertising_active) {
+		return;
+	}
+
+	int err = bt_le_adv_stop();
+	if (err && err != -EALREADY) {
+		LOG_WRN("Advertising stop failed: %d", err);
+	} else {
+		advertising_active = false;
+		LOG_INF("Advertising stopped");
 	}
 }
 
@@ -139,8 +158,20 @@ int ble_nus_init(void)
 		return err;
 	}
 
-	start_advertising(nullptr);
+	/* Advertising is NOT started here. The application decides when to
+	 * advertise via ble_nus_start_advertising() (e.g. only when USB is
+	 * not connected). */
 	return 0;
+}
+
+void ble_nus_start_advertising(void)
+{
+	k_work_schedule(&adv_work, K_NO_WAIT);
+}
+
+void ble_nus_stop_advertising(void)
+{
+	stop_advertising();
 }
 
 bool ble_nus_ready(void)
@@ -149,6 +180,14 @@ bool ble_nus_ready(void)
 	bool ready = current_conn != nullptr && notifications_enabled;
 	k_mutex_unlock(&state_mutex);
 	return ready;
+}
+
+bool ble_nus_connected(void)
+{
+	k_mutex_lock(&state_mutex, K_FOREVER);
+	bool connected_now = current_conn != nullptr;
+	k_mutex_unlock(&state_mutex);
+	return connected_now;
 }
 
 int ble_nus_send(const uint8_t *data, uint16_t len)

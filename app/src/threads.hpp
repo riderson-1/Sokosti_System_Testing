@@ -20,7 +20,6 @@
 class ADS1299;
 
 extern ADS1299               ads;
-extern const struct gpio_dt_spec led;
 extern int32_t               last_ch1_code;
 
 /* ---------------------------------------------------------------------------

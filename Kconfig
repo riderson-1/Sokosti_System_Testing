@@ -1,1 +1,3 @@
+rsource "app/src/usb/Kconfig.sample_usbd"
+
 source "Kconfig.zephyr"

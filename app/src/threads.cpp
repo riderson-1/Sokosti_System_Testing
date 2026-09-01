@@ -8,11 +8,19 @@
 #include "threads.hpp"
 #include "ads1299_driver.hpp"
 #include "ble/ble_nus.hpp"
+#include "usb/usb_cdc.hpp"
 #include "bhi360_driver.hpp"
 
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/pwm.h>
 
 #include <string.h>
+#include <math.h>
+
+/* M_PI is POSIX, not standard C++ — picolibc's strict headers omit it. */
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
 
 LOG_MODULE_REGISTER(threads, LOG_LEVEL_DBG);
 
@@ -52,6 +60,20 @@ static uint8_t computeChecksum(const Packet &p)
     return sum;
 }
 
+/**
+ * Send a raw buffer over the active transport. USB (when a host has the
+ * port open) takes precedence; otherwise BLE NUS is used. Returns 0 on
+ * success or the transport error code.
+ */
+static int transport_send(const uint8_t *data, size_t len)
+{
+    if (usb_cdc::connected()) {
+        usb_cdc::print(reinterpret_cast<const char *>(data), len);
+        return 0;
+    }
+    return ble_nus_send_stream(data, static_cast<uint16_t>(len));
+}
+
 /* ---------------------------------------------------------------------------
  * Thread entry functions
  * ------------------------------------------------------------------------- */
@@ -78,20 +100,20 @@ static void ble_writer_thread(void *, void *, void *)
         if (k_msgq_get(&emg_queue, &out_batch, K_NO_WAIT) == 0) {
             for (size_t i = 0; i < ARRAY_SIZE(out_batch.samples); i++) {
                 const SamplePacket &pkt = out_batch.samples[i];
-                int send_ret = ble_nus_send_stream(
+                int send_ret = transport_send(
                     reinterpret_cast<const uint8_t *>(&pkt), sizeof(pkt));
                 if (send_ret && send_ret != -ENOTCONN) {
-                    LOG_WRN("EMG BLE send dropped: %d", send_ret);
+                    LOG_WRN("EMG send dropped: %d", send_ret);
                 }
             }
         }
 
         while (k_msgq_get(&imu_queue, &imu_packet, K_NO_WAIT) == 0) {
-            int send_ret = ble_nus_send_stream(
+            int send_ret = transport_send(
                 reinterpret_cast<const uint8_t *>(&imu_packet),
                 sizeof(imu_packet));
             if (send_ret && send_ret != -ENOTCONN) {
-                LOG_WRN("IMU BLE send dropped: %d", send_ret);
+                LOG_WRN("IMU send dropped: %d", send_ret);
             }
         }
 
@@ -118,7 +140,6 @@ static void acquisition_thread(void *, void *, void *)
         ret = ads.readFrameRdatac(frame);
         if (ret) {
             LOG_ERR("Frame read failed: %d", ret);
-            gpio_pin_toggle_dt(&led);
             continue;
         }
 
@@ -155,9 +176,71 @@ static void acquisition_thread(void *, void *, void *)
 
 static void led_toggling(void *, void *, void *)
 {
+    /*
+     * Status LED thread (hardware PWM).
+     *
+     * LED0 (blue) — transport status:
+     *   - slow blink  : BLE advertising, no connection
+     *   - solid on    : BLE connected
+     *   - breathing   : USB host connected (CDC DTR asserted)
+     *
+     * LED1 (yellow) — measurement status:
+     *   - breathing PWM fade (never fully off) while the ADS1299
+     *     acquisition thread and the IMU thread are running.
+     */
+    static const struct pwm_dt_spec led_blue =
+        PWM_DT_SPEC_GET(DT_ALIAS(led0));
+    static const struct pwm_dt_spec led_yellow =
+        PWM_DT_SPEC_GET(DT_ALIAS(led1));
+
+    if (!pwm_is_ready_dt(&led_blue) || !pwm_is_ready_dt(&led_yellow)) {
+        LOG_ERR("Status LEDs not ready");
+        return;
+    }
+
+    /* PWM period from the devicetree node (10 ms -> 100 Hz). */
+    const uint32_t period_ns = led_blue.period;
+    const uint32_t max_pulse_ns = period_ns;   /* 100 % duty */
+    const uint32_t min_pulse_ns = period_ns / 20; /* ~5 % floor */
+
+    /*
+     * Breathing parameters. The fade uses a raised-cosine (half-wave
+     * rectified sine) profile: smooth at both ends, never fully dark.
+     *   level = (1 - cos(pi * phase)) / 2   in [0, 1]
+     */
+    const uint32_t breath_period_ms = 2400; /* full bright->dark cycle */
+    const uint32_t tick_ms = 20;            /* LED update tick         */
+
+    uint32_t t_ms = 0;
+
     while (true) {
-        k_sleep(K_MSEC(500));
-        gpio_pin_toggle_dt(&led);
+        /* Raised-cosine breathing level, 0..1, never fully dark. */
+        float phase = (float)(t_ms % breath_period_ms) /
+                      (float)breath_period_ms;
+        float level = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * phase));
+        /* Floor so the LED never goes fully off. */
+        float level_floored = 0.00f + 1.0f * level;
+
+        uint32_t pulse_ns = min_pulse_ns +
+            (uint32_t)((float)(max_pulse_ns - min_pulse_ns) * level_floored);
+
+        /* ---- Blue LED: transport state ---- */
+        if (usb_cdc::connected()) {
+            /* Breathing pulse. */
+            pwm_set_pulse_dt(&led_blue, pulse_ns);
+        } else if (ble_nus_connected()) {
+            pwm_set_pulse_dt(&led_blue, max_pulse_ns);  /* solid on */
+        } else {
+            /* Slow blink: advertising. 500 ms on / 500 ms off. */
+            pwm_set_pulse_dt(&led_blue,
+                             ((t_ms / 500) % 2) ? max_pulse_ns : 0U);
+        }
+
+        /* ---- Yellow LED: measurement breathing fade ---- */
+        pwm_set_pulse_dt(&led_yellow, pulse_ns);
+
+        k_sleep(K_MSEC(tick_ms));
+        t_ms += tick_ms;
     }
 }
 

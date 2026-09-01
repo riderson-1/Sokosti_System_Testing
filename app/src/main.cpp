@@ -21,16 +21,16 @@
 #include "ads1299_definitions.h"
 #include "ads1299_driver.hpp"
 #include "ble/ble_nus.hpp"
+#include "usb/usb_cdc.hpp"
 #include "ads1299_configs.hpp"
 #include "threads.hpp"
 #include "bhi360_driver.hpp"
 
 /*
  * Devicetree aliases / node labels for the Sokosti board.
- * LED is kept here (used by threads); the rest are passed to ADS1299.
+ * Status LEDs are owned by the LED thread in threads.cpp.
  */
 #define ADS_NODE        DT_NODELABEL(ads1299)
-#define LED_NODE        DT_ALIAS(led0)
 #define RESET_NODE      DT_NODELABEL(reset_ads)
 #define START_NODE      DT_NODELABEL(global_start)
 #define DRDY_NODE       DT_NODELABEL(drdy_ads)
@@ -42,9 +42,6 @@
 static const struct spi_dt_spec ads_spi =
     SPI_DT_SPEC_GET(ADS_NODE,
             SPI_WORD_SET(8) | SPI_TRANSFER_MSB | SPI_MODE_CPHA);
-
-const struct gpio_dt_spec led =
-    GPIO_DT_SPEC_GET(LED_NODE, gpios);
 
 static const struct gpio_dt_spec reset_pin =
     GPIO_DT_SPEC_GET(RESET_NODE, gpios);
@@ -59,7 +56,7 @@ static const struct pwm_dt_spec ads_clk_pwm =
     PWM_DT_SPEC_GET(ADS_CLK_NODE);
 
 /* Single ADS1299 instance — all board pins are bound at construction. */
-ADS1299 ads(ads_spi, reset_pin, start_pin, drdy_pin, led, ads_clk_pwm);
+ADS1299 ads(ads_spi, reset_pin, start_pin, drdy_pin, ads_clk_pwm);
 
 static ADS1299Settings cfg = makeAdsSettings(AdsPreset::AllChannelsLowSpeed);
 
@@ -71,15 +68,38 @@ int main(void)
 {
     int ret;
     uint8_t id = 0;
+    bool usb_active = false;
 
     // ---------------------------------------
-    // Bluetooth NUS (host communication)
+    // USB CDC bring-up (non-blocking)
+    // ---------------------------------------
+
+    ret = usb_cdc::init();
+    if (ret != 0) {
+        LOG_WRN("USB CDC init failed: %d — BLE-only mode", ret);
+    }
+
+    // ---------------------------------------
+    // Bluetooth NUS bring-up (advertising deferred)
     // ---------------------------------------
 
     ret = ble_nus_init();
     if (ret != 0) {
         LOG_ERR("BLE NUS init failed: %d", ret);
         return 0;
+    }
+
+    /*
+     * Transport arbitration: if a USB host has already opened the virtual
+     * COM port (DTR asserted), USB is the active transport and BLE stays
+     * silent. Otherwise BLE starts advertising as the fallback path.
+     */
+    if (usb_cdc::connected()) {
+        usb_active = true;
+        LOG_INF("USB host detected — USB transport active, BLE idle");
+    } else {
+        ble_nus_start_advertising();
+        LOG_INF("No USB host — BLE advertising started");
     }
 
     LOG_INF("ADS1299 internal test signal capture starting...");
@@ -145,11 +165,27 @@ int main(void)
 
 
     // ---------------------------------------
-    // main loop
+    // main loop — transport arbitration
     // ---------------------------------------
 
     while (true) {
-        k_sleep(K_SECONDS(1));
+        bool usb_now = usb_cdc::connected();
+
+        if (usb_now != usb_active) {
+            if (usb_now) {
+                /* USB host just opened the port: USB wins, BLE goes quiet. */
+                usb_active = true;
+                ble_nus_stop_advertising();
+                LOG_INF("USB host connected. BLE advertising stopped.");
+            } else {
+                /* USB host released the port: fall back to BLE. */
+                usb_active = false;
+                ble_nus_start_advertising();
+                LOG_INF("USB host disconnected. BLE advertising started.");
+            }
+        }
+
+        k_sleep(K_MSEC(500));
     }
 
     return 0;

@@ -2,8 +2,14 @@
 
 #include <stdint.h>
 
-/** Initialize Bluetooth, NUS, and connectable advertising. */
+/** Initialize Bluetooth and NUS. Does NOT start advertising. */
 int ble_nus_init(void);
+
+/** Start connectable advertising (idempotent). */
+void ble_nus_start_advertising(void);
+
+/** Stop advertising (idempotent). */
+void ble_nus_stop_advertising(void);
 
 /**
  * Try to send one NUS notification.
@@ -24,3 +30,6 @@ int ble_nus_send_stream(const uint8_t *data, uint16_t len);
 
 /** Return true when a connection has subscribed to NUS TX notifications. */
 bool ble_nus_ready(void);
+
+/** Return true when a BLE central is currently connected. */
+bool ble_nus_connected(void);
