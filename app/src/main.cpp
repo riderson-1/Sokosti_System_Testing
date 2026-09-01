@@ -55,7 +55,7 @@ static const struct pwm_dt_spec ads_clk_pwm =
 /* Single ADS1299 instance — all board pins are bound at construction. */
 ADS1299 ads(ads_spi, reset_pin, start_pin, drdy_pin, ads_clk_pwm);
 
-static ADS1299Settings cfg = makeAdsSettings(AdsPreset::AllChannelsLowSpeed);
+static ADS1299Settings cfg = makeAdsSettings(AdsPreset::AllChannelsMeasurement);
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 

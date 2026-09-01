@@ -474,13 +474,8 @@ static void sd_writer_thread_entry(void *, void *, void *)
         LOG_ERR("SD CARD ERROR: Error unmounting filesystem: %d", ret);
     }
 
-    LOG_INF("");
-    LOG_INF("*************************************************************");
-    LOG_INF("  [SUCCESS] DATA SAVE COMPLETE & SAFE TO REMOVE");
-    LOG_INF("  -> All buffers written successfully to: %s", filepath);
-    LOG_INF("  -> Yellow LED is OFF.");
-    LOG_INF("  -> It is now 100%% safe to power off or unplug the SD card!");
-    LOG_INF("*************************************************************");
+    LOG_INF("All buffers written successfully to: %s. SAVE COMPLETE & SAFE TO REMOVE", filepath);
+
 }
 
 /* ---------------------------------------------------------------------------
