@@ -153,8 +153,6 @@ static void ble_writer_thread(void *, void *, void *)
         }
 
         if (k_msgq_get(&emg_queue, &out_batch, K_NO_WAIT) == 0) {
-            (void)k_msgq_put(&emg_sd_queue, &out_batch, K_NO_WAIT);
-
             const bool ble_active = !usb_cdc::connected();
             const size_t group_samples =
                 ble_active ? BLE_EMG_GROUP_SAMPLES : 1;
@@ -183,7 +181,6 @@ static void ble_writer_thread(void *, void *, void *)
             if (k_msgq_get(&imu_queue, &imu_packet, K_NO_WAIT) != 0) {
                 break;
             }
-            (void)k_msgq_put(&imu_sd_queue, &imu_packet, K_NO_WAIT);
 
             int send_ret = transport_send(
                 reinterpret_cast<const uint8_t *>(&imu_packet),
@@ -244,6 +241,11 @@ static void acquisition_thread(void *, void *, void *)
         batch_count++;
 
         if (batch_count == 8) {   // BATCH_SIZE
+            /* Independent SD copy: capture every batch regardless of BLE
+             * state. Non-blocking; if the SD queue is ever full the batch is
+             * dropped from SD only — never purge or block here. */
+            (void)k_msgq_put(&emg_sd_queue, &batch, K_NO_WAIT);
+
             if (k_msgq_put(&emg_queue, &batch, K_NO_WAIT) != 0) {
                 k_msgq_purge(&emg_queue);
                 (void)k_msgq_put(&emg_queue, &batch, K_NO_WAIT);

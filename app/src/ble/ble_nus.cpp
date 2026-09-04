@@ -102,6 +102,17 @@ void connected(struct bt_conn *conn, uint8_t err)
 		BT_GAP_MS_TO_CONN_TIMEOUT(1000));     /* supervision timeout                 */
 	(void)bt_conn_le_param_update(conn, &param);
 
+	/* Request 2M PHY to roughly double the raw air rate. The central must
+	 * also support 2M PHY, otherwise the request is rejected/ignored.
+	 * (BT_CONN_LE_PHY_PARAM_2M is a compound-literal array macro whose
+	 * address cannot be taken in C++, so declare a local struct instead.) */
+	struct bt_conn_le_phy_param phy_param = BT_CONN_LE_PHY_PARAM_INIT(
+		BT_GAP_LE_PHY_2M, BT_GAP_LE_PHY_2M);
+	err = bt_conn_le_phy_update(conn, &phy_param);
+	if (err) {
+		LOG_WRN("PHY update to 2M failed: %d", err);
+	}
+
 	LOG_INF("BLE connected");
 }
 
