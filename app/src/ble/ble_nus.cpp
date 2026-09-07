@@ -113,6 +113,17 @@ void connected(struct bt_conn *conn, uint8_t err)
 		LOG_WRN("PHY update to 2M failed: %d", err);
 	}
 
+	/* Request Data Length Extension (DLE): 251-byte payload per packet at
+	 * the maximum packet time. This lets the controller send full 251-byte
+	 * packets instead of the default 27 bytes, roughly tripling the raw
+	 * air rate per packet. Requires CONFIG_BT_USER_DATA_LEN_UPDATE=y. */
+	struct bt_conn_le_data_len_param dle_param =
+		BT_CONN_LE_DATA_LEN_PARAM_INIT(BT_GAP_DATA_LEN_MAX, BT_GAP_DATA_TIME_MAX);
+	err = bt_conn_le_data_len_update(conn, &dle_param);
+	if (err) {
+		LOG_WRN("DLE update failed: %d", err);
+	}
+
 	LOG_INF("BLE connected");
 }
 
