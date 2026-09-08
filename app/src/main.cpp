@@ -168,7 +168,7 @@ int main(void)
 
     while (true) {
         // Safe backup shutdown: stop ADC hardware physical sampling when recording finishes
-        if (!recording_active && ads_conversions_running) {
+        if (!measurement_active && ads_conversions_running) {
             ads_conversions_running = false;
             ads.stopConversions();
             LOG_INF("ADC Conversion stopped cleanly.");

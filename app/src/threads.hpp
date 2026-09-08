@@ -64,8 +64,13 @@ extern struct k_msgq imu_queue;
 extern struct k_msgq emg_sd_queue;
 extern struct k_msgq imu_sd_queue;
 
-// Global flag to coordinate safe shutdown
-extern volatile bool recording_active;
+// Global flag: sampling/streaming is running (device is measuring)
+extern volatile bool measurement_active;
+
+// SD-card record toggle, driven by Button 1:
+// false = measuring only (streaming over BLE/USB, nothing written to SD)
+// true  = additionally persisting to /SD:/logs/session_XXXX.bin
+extern volatile bool sd_recording;
 
 /* ---------------------------------------------------------------------------
  * Thread setup — called once from main() after ADS initialisation

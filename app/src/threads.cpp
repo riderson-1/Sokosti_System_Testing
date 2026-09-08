@@ -43,7 +43,12 @@ K_MSGQ_DEFINE(imu_queue, sizeof(ImuSamplePacket), 8, 8);
 K_MSGQ_DEFINE(emg_sd_queue, sizeof(EmgSamplePacket), 32, 4);
 K_MSGQ_DEFINE(imu_sd_queue, sizeof(ImuSamplePacket), 64, 4);
 
-volatile bool recording_active = true;
+volatile bool measurement_active = true;
+
+// SD record toggle (Button 1): starts OFF — data is measured and streamed
+// over BLE/USB from boot, but nothing is written to the SD card until the
+// button is pressed.
+volatile bool sd_recording = false;
 
 /* ---------------------------------------------------------------------------
  * BLE writer tunables
@@ -94,12 +99,18 @@ static struct gpio_callback button_cb_data;
 
 void button_pressed_cb(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
-    if (recording_active) {
-        recording_active = false;
+    sd_recording = !sd_recording;
+    if (sd_recording) {
         LOG_INF("");
         LOG_INF("=============================================================");
         LOG_INF("  [USER EVENT] Button 1 Pressed!");
-        LOG_INF("  -> Initiating safe data sync & backup shutdown sequence...");
+        LOG_INF("  -> SD recording ENABLED. Streams will be written to SD.");
+        LOG_INF("=============================================================");
+    } else {
+        LOG_INF("");
+        LOG_INF("=============================================================");
+        LOG_INF("  [USER EVENT] Button 1 Pressed!");
+        LOG_INF("  -> SD recording DISABLED. Streaming continues without SD.");
         LOG_INF("=============================================================");
     }
 }
@@ -146,7 +157,7 @@ static void ble_writer_thread(void *, void *, void *)
                                         K_POLL_MODE_NOTIFY_ONLY, &imu_queue, 0),
     };
 
-    while (recording_active || k_msgq_num_used_get(&emg_queue) > 0 || k_msgq_num_used_get(&imu_queue) > 0) {
+    while (measurement_active || k_msgq_num_used_get(&emg_queue) > 0 || k_msgq_num_used_get(&imu_queue) > 0) {
         int ret = k_poll(events, ARRAY_SIZE(events), K_MSEC(50));
         if (ret != 0) {
             continue;
@@ -211,9 +222,9 @@ static void acquisition_thread(void *, void *, void *)
     EmgSamplePacket batch;
     size_t batch_count = 0;
 
-    while (recording_active) {
+    while (measurement_active) {
         ret = k_sem_take(&ADS1299::drdy_sem, K_MSEC(50));
-        if (ret != 0 || !recording_active) {
+        if (ret != 0 || !measurement_active) {
             continue;
         }
 
@@ -241,10 +252,12 @@ static void acquisition_thread(void *, void *, void *)
         batch_count++;
 
         if (batch_count == 8) {   // BATCH_SIZE
-            /* Independent SD copy: capture every batch regardless of BLE
-             * state. Non-blocking; if the SD queue is ever full the batch is
+            /* SD copy: only while sd_recording is toggled on by Button 1.
+             * Non-blocking; if the SD queue is ever full the batch is
              * dropped from SD only — never purge or block here. */
-            (void)k_msgq_put(&emg_sd_queue, &batch, K_NO_WAIT);
+            if (sd_recording) {
+                (void)k_msgq_put(&emg_sd_queue, &batch, K_NO_WAIT);
+            }
 
             if (k_msgq_put(&emg_queue, &batch, K_NO_WAIT) != 0) {
                 k_msgq_purge(&emg_queue);
@@ -297,11 +310,14 @@ static void led_toggling(void *, void *, void *)
                              ((t_ms / 500) % 2) ? max_pulse_ns : 0U);
         }
 
-        /* ---- Yellow LED: measurement breathing ---- */
-        if (recording_active) {
-            pwm_set_pulse_dt(&led_yellow, pulse_ns);
+        /* ---- Yellow LED: SD recording state ----
+         * Blinking = measuring, not saving to SD.
+         * Solid on = actively saving to SD card. */
+        if (sd_recording) {
+            pwm_set_pulse_dt(&led_yellow, max_pulse_ns);  /* solid on */
         } else {
-            pwm_set_pulse_dt(&led_yellow, 0U); 
+            pwm_set_pulse_dt(&led_yellow,
+                             ((t_ms / 500) % 2) ? max_pulse_ns : 0U);
         }
 
         k_sleep(K_MSEC(tick_ms));
@@ -338,7 +354,7 @@ static void live_log(void *, void *, void *)
 
 static void imu_thread(void *, void *, void *)
 {
-    while (recording_active) {
+    while (measurement_active) {
         bhi360_process_fifo();
         k_msleep(10);
     }
@@ -388,96 +404,118 @@ static void sd_writer_thread_entry(void *, void *, void *)
         LOG_ERR("SD CARD: stat on '/SD:/logs' failed: %d", ret);
     }
 
-    // Stack-safe file existence search loop using globally static files
-    int file_idx = 1;
-    bool opened = false;
-    LOG_INF("SD CARD: Scanning for next available session index...");
-
-    while (file_idx < 1000) {
-        snprintf(filepath, sizeof(filepath), "/SD:/logs/session_%04d.bin", file_idx);
-        
-        // Try opening candidate as Read-Only to verify if it exists
-        ret = fs_open(&test_file, filepath, FS_O_READ);
-        if (ret == 0) {
-            // File exists, close it and try the next index increment
-            fs_close(&test_file);
-            file_idx++;
-        } else if (ret == -ENOENT) {
-            // File does NOT exist! Safe to create it.
-            ret = fs_open(&log_file, filepath, FS_O_CREATE | FS_O_WRITE | FS_O_APPEND);
-            if (ret == 0) {
-                opened = true;
-                LOG_INF("=============================================================");
-                LOG_INF("  [SD BACKUP INITIALIZED]");
-                LOG_INF("  -> Created File: %s", filepath);
-                LOG_INF("  -> All data streams will be interleaved inside this file.");
-                LOG_INF("=============================================================");
-                break;
-            } else {
-                LOG_ERR("SD CARD ERROR: Failed to create write handle at %s: %d", filepath, ret);
-                break;
-            }
-        } else {
-            LOG_ERR("SD CARD ERROR: Directory check failed at %s: %d", filepath, ret);
-            break; 
-        }
-    }
-
-    if (!opened) {
-        LOG_ERR("SD CARD ERROR: Unable to allocate a valid log file! Exiting writer.");
-        fs_unmount(&sd_mount);
-        return;
-    }
+    LOG_INF("SD CARD: Ready. Press Button 1 to start a new recording session.");
 
     EmgSamplePacket emg_pkt;
     ImuSamplePacket imu_pkt;
     uint32_t write_counter = 0;
+    int file_idx = 1;
 
-    // Active logging loop
-    while (recording_active || k_msgq_num_used_get(&emg_sd_queue) > 0 || k_msgq_num_used_get(&imu_sd_queue) > 0) {
-        bool idle = true;
-
-        if (k_msgq_get(&emg_sd_queue, &emg_pkt, K_NO_WAIT) == 0) {
-            fs_write(&log_file, &emg_pkt, sizeof(EmgSamplePacket));
-            idle = false;
-            write_counter++;
-        }
-
-        if (k_msgq_get(&imu_sd_queue, &imu_pkt, K_NO_WAIT) == 0) {
-            fs_write(&log_file, &imu_pkt, sizeof(ImuSamplePacket));
-            idle = false;
-            write_counter++;
-        }
-
-        if (write_counter >= 50) {
-            fs_sync(&log_file);
-            write_counter = 0;
-        }
-
-        if (idle) {
+    // Session loop: each Button-1 press starts a FRESH session_XXXX.bin;
+    // the next press closes it. Streaming via BLE/USB is unaffected either
+    // way. The card stays mounted for the lifetime of the device.
+    while (true) {
+        /* ---- Wait for the recording toggle to go active ---- */
+        if (!sd_recording) {
             k_sleep(K_MSEC(10));
+            continue;
+        }
+
+        /* ---- Start of a new session: pick the next free index ---- */
+        bool opened = false;
+        while (file_idx < 1000) {
+            snprintf(filepath, sizeof(filepath), "/SD:/logs/session_%04d.bin", file_idx);
+
+            // Try opening candidate as Read-Only to verify if it exists
+            ret = fs_open(&test_file, filepath, FS_O_READ);
+            if (ret == 0) {
+                // File exists, close it and try the next index increment
+                fs_close(&test_file);
+                file_idx++;
+            } else if (ret == -ENOENT) {
+                // File does NOT exist! Safe to create it.
+                ret = fs_open(&log_file, filepath, FS_O_CREATE | FS_O_WRITE | FS_O_APPEND);
+                if (ret == 0) {
+                    opened = true;
+                    LOG_INF("=============================================================");
+                    LOG_INF("  [SD SESSION STARTED]");
+                    LOG_INF("  -> Created File: %s", filepath);
+                    LOG_INF("  -> All data streams will be interleaved inside this file.");
+                    LOG_INF("=============================================================");
+                    break;
+                } else {
+                    LOG_ERR("SD CARD ERROR: Failed to create write handle at %s: %d", filepath, ret);
+                    break;
+                }
+            } else {
+                LOG_ERR("SD CARD ERROR: Directory check failed at %s: %d", filepath, ret);
+                break;
+            }
+        }
+
+        if (!opened) {
+            LOG_ERR("SD CARD ERROR: Unable to allocate a valid log file! "
+                    "SD recording disabled until next button press.");
+            // Drop whatever accumulated in the queues while idle, then wait
+            // for the next toggle-on before retrying with a new index.
+            while (k_msgq_get(&emg_sd_queue, &emg_pkt, K_NO_WAIT) == 0) {}
+            while (k_msgq_get(&imu_sd_queue, &imu_pkt, K_NO_WAIT) == 0) {}
+            while (sd_recording) {
+                k_sleep(K_MSEC(10));
+            }
+            continue;
+        }
+
+        /* ---- Active session: drain queues while toggle stays on ---- */
+        write_counter = 0;
+        while (sd_recording) {
+            bool idle = true;
+
+            if (k_msgq_get(&emg_sd_queue, &emg_pkt, K_NO_WAIT) == 0) {
+                fs_write(&log_file, &emg_pkt, sizeof(EmgSamplePacket));
+                idle = false;
+                write_counter++;
+            }
+
+            if (k_msgq_get(&imu_sd_queue, &imu_pkt, K_NO_WAIT) == 0) {
+                fs_write(&log_file, &imu_pkt, sizeof(ImuSamplePacket));
+                idle = false;
+                write_counter++;
+            }
+
+            if (write_counter >= 50) {
+                fs_sync(&log_file);
+                write_counter = 0;
+            }
+
+            if (idle) {
+                k_sleep(K_MSEC(10));
+            }
+        }
+
+        /* ---- Toggle turned off: flush and close this session ---- */
+        // Drain any packets still queued so nothing recorded is lost.
+        while (k_msgq_get(&emg_sd_queue, &emg_pkt, K_NO_WAIT) == 0) {
+            fs_write(&log_file, &emg_pkt, sizeof(EmgSamplePacket));
+            write_counter++;
+        }
+        while (k_msgq_get(&imu_sd_queue, &imu_pkt, K_NO_WAIT) == 0) {
+            fs_write(&log_file, &imu_pkt, sizeof(ImuSamplePacket));
+            write_counter++;
+        }
+        fs_sync(&log_file);
+
+        ret = fs_close(&log_file);
+        if (ret == 0) {
+            LOG_INF("=============================================================");
+            LOG_INF("  [SD SESSION STOPPED]");
+            LOG_INF("  -> File closed: %s", filepath);
+            LOG_INF("  -> Data flushed. SAFE TO REMOVE CARD.");
+            LOG_INF("=============================================================");
+        } else {
+            LOG_ERR("SD CARD ERROR: Error closing file: %d", ret);
         }
     }
-
-    // --- GRACEFUL SHUTDOWN AND FILE CLOSING ---
-    LOG_INF("SD CARD: Stopping loop. Flushing final queues and closing file descriptors...");
-    
-    ret = fs_close(&log_file);
-    if (ret == 0) {
-        LOG_INF("SD CARD: File closure verified success.");
-    } else {
-        LOG_ERR("SD CARD ERROR: Error closing file: %d", ret);
-    }
-
-    ret = fs_unmount(&sd_mount);
-    if (ret == 0) {
-        LOG_INF("SD CARD: Unmounted filesystem successfully.");
-    } else {
-        LOG_ERR("SD CARD ERROR: Error unmounting filesystem: %d", ret);
-    }
-
-    LOG_INF("All buffers written successfully to: %s. SAVE COMPLETE & SAFE TO REMOVE", filepath);
-
 }
 
 /* ---------------------------------------------------------------------------
@@ -493,7 +531,7 @@ void threads_setup(void)
         gpio_pin_interrupt_configure_dt(&button_1, GPIO_INT_EDGE_TO_ACTIVE);
         gpio_init_callback(&button_cb_data, button_pressed_cb, BIT(button_1.pin));
         gpio_add_callback(button_1.port, &button_cb_data);
-        LOG_INF("Button 1 configured as Safe Eject Shutdown trigger");
+        LOG_INF("Button 1 configured as SD recording toggle");
     }
 
     k_thread_create(
