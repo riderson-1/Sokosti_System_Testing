@@ -421,6 +421,8 @@ int32_t ADS1299::decode24(const uint8_t *p)
 /*  Static members (defined here, declared in the header)             */
 /* ------------------------------------------------------------------ */
 
+atomic_t ADS1299::drdy_backlog = ATOMIC_INIT(0);
+atomic_t ADS1299::drdy_isr_total = ATOMIC_INIT(0);
 struct k_sem ADS1299::drdy_sem;
 struct gpio_callback ADS1299::drdy_cb_data_;
 
@@ -432,8 +434,10 @@ int ADS1299::boardBringUp()
 {
     int ret;
 
-    /* 0. Initialise the DRDY semaphore (binary) */
+    /* 0. Initialise the DRDY semaphore (binary) and counters */
     k_sem_init(&drdy_sem, 0, 1);
+    atomic_set(&drdy_backlog, 0);
+    atomic_set(&drdy_isr_total, 0);
 
     /* 1. Check SPI is ready */
     if (!spi_is_ready_dt(&spi_)) {
@@ -515,8 +519,16 @@ int ADS1299::startAdsPwmClock()
     }
 
     /*
-     * ~2 MHz: 500 ns period, 250 ns pulse.
-     * ADS1299 typical external fCLK is 2.048 MHz in datasheet examples [14].
+     * fCLK as close to the nominal 2.048 MHz as the nRF PWM can produce.
+     * The PWM clock is 16 MHz, so the period must be an integer number of
+     * 62.5 ns ticks. Exact 2.048 MHz would need 7.8125 ticks — impossible.
+     * Nearest achievable settings:
+     *   7 ticks = 437.5 ns -> 2.286 MHz -> 1116 SPS (+11.6%)  [too fast]
+     *   8 ticks = 500.0 ns -> 2.000 MHz -> 976.6 SPS (-2.3%)   [chosen]
+     * NOTE: PWM_NSEC(488) truncates to 7 ticks and overshoots badly
+     * (measured 1122 SPS), so request a full 500 ns.
+     * The ADS1299 CONFIG1 data-rate settings are ratios of fCLK, so the
+     * residual -2.3% scales the 1000 SPS nominal rate proportionally.
      */
     int ret = pwm_set_dt(&ads_clk_pwm_, PWM_NSEC(500), PWM_NSEC(250));
     if (ret) {
@@ -532,5 +544,12 @@ void ADS1299::drdyIsr(const struct device *dev,
                       struct gpio_callback *cb,
                       uint32_t pins)
 {
+    /* Account for every pulse: isr_total is the ground truth for how many
+     * conversions the ADC delivered; backlog shows how many are still
+     * waiting to be read. The semaphore wakes the acquisition thread
+     * immediately (its give is a no-op when already at 1 — that collapse
+     * is exactly what backlog/isr_total let us measure). */
+    atomic_inc(&drdy_isr_total);
+    atomic_inc(&drdy_backlog);
     k_sem_give(&drdy_sem);
 }

@@ -70,6 +70,57 @@ void mtu_exchange_cb(struct bt_conn *conn, uint8_t att_err,
 		att_err ? " (exchange failed)" : "");
 }
 
+const char *phy_str(uint8_t phy)
+{
+	switch (phy) {
+	case BT_GAP_LE_PHY_1M:    return "1M";
+	case BT_GAP_LE_PHY_2M:    return "2M";
+	case BT_GAP_LE_PHY_CODED: return "Coded";
+	default:                  return "Unknown";
+	}
+}
+
+/* Fired whenever the LL connection interval / latency / timeout actually
+ * in use changes — including the very first negotiation after connect.
+ * This is the ground truth for what bt_conn_le_param_update() achieved;
+ * the central can reject/renegotiate the requested values. */
+void le_param_updated(struct bt_conn *conn, uint16_t interval,
+			      uint16_t latency, uint16_t timeout)
+{
+	ARG_UNUSED(conn);
+	LOG_INF("Conn params updated: interval=%u units (%u.%02u ms) "
+		"latency=%u timeout=%u units (%u ms)",
+		interval, (interval * 125U) / 100U, (interval * 125U) % 100U,
+		latency, timeout, timeout * 10U);
+}
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+/* Fired when the active PHY changes — including the response to our 2M
+ * request in connected(). Confirms whether the central actually granted 2M
+ * or the link stayed on 1M (e.g. central doesn't support 2M). */
+void le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *param)
+{
+	ARG_UNUSED(conn);
+	LOG_INF("PHY updated: tx=%s rx=%s", phy_str(param->tx_phy),
+		phy_str(param->rx_phy));
+}
+#endif /* CONFIG_BT_USER_PHY_UPDATE */
+
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+/* Fired when the negotiated LL Data Length changes — confirms whether the
+ * network core's DLE request (251 B / max time) was actually granted, or
+ * whether the link is still capped at the legacy 27-byte PDU. */
+void le_data_len_updated(struct bt_conn *conn,
+				 struct bt_conn_le_data_len_info *info)
+{
+	ARG_UNUSED(conn);
+	LOG_INF("Data length updated: tx_len=%u tx_time=%uus "
+		"rx_len=%u rx_time=%uus",
+		info->tx_max_len, info->tx_max_time,
+		info->rx_max_len, info->rx_max_time);
+}
+#endif /* CONFIG_BT_USER_DATA_LEN_UPDATE */
+
 void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
@@ -159,6 +210,13 @@ struct bt_nus_cb nus_callbacks = {
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
+	.le_param_updated = le_param_updated,
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	.le_phy_updated = le_phy_updated,
+#endif
+#if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
+	.le_data_len_updated = le_data_len_updated,
+#endif
 };
 
 } // namespace

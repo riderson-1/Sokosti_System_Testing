@@ -262,15 +262,19 @@ static bool test_bhi360_spi(void)
 	 packet.data_len = 10;
 	 memcpy(packet.data, info->data_ptr, packet.data_len);
 	 packet.checksum = checksum(packet);
+	 atomic_inc(&imu_samples_collected);
 	 /* SD copy: only while sd_recording is toggled on by Button 1.
 	  * Non-blocking; if the SD queue is ever full the packet is dropped from
 	  * SD only — never purge or block here. */
 	 if (sd_recording) {
-		 (void)k_msgq_put(&imu_sd_queue, &packet, K_NO_WAIT);
+		 if (k_msgq_put(&imu_sd_queue, &packet, K_NO_WAIT) != 0) {
+			 atomic_inc(&imu_sd_queue_drops);
+		 }
 	 }
 	 /* Latest-wins: if the queue is full, purge the stale backlog and keep
 	  * only the freshest packet, so IMU never accumulates old data. */
 	 if (k_msgq_put(&imu_queue, &packet, K_NO_WAIT) != 0) {
+		 atomic_inc(&imu_live_queue_drops);
 		 k_msgq_purge(&imu_queue);
 		 (void)k_msgq_put(&imu_queue, &packet, K_NO_WAIT);
 	 }
@@ -286,15 +290,19 @@ static bool test_bhi360_spi(void)
 	 packet.data_len = 6;
 	 memcpy(packet.data, info->data_ptr, packet.data_len);
 	 packet.checksum = checksum(packet);
+	 atomic_inc(&imu_samples_collected);
 	 /* SD copy: only while sd_recording is toggled on by Button 1.
 	  * Non-blocking; if the SD queue is ever full the packet is dropped from
 	  * SD only — never purge or block here. */
 	 if (sd_recording) {
-		 (void)k_msgq_put(&imu_sd_queue, &packet, K_NO_WAIT);
+		 if (k_msgq_put(&imu_sd_queue, &packet, K_NO_WAIT) != 0) {
+			 atomic_inc(&imu_sd_queue_drops);
+		 }
 	 }
 	 /* Latest-wins: if the queue is full, purge the stale backlog and keep
 	  * only the freshest packet, so IMU never accumulates old data. */
 	 if (k_msgq_put(&imu_queue, &packet, K_NO_WAIT) != 0) {
+		 atomic_inc(&imu_live_queue_drops);
 		 k_msgq_purge(&imu_queue);
 		 (void)k_msgq_put(&imu_queue, &packet, K_NO_WAIT);
 	 }

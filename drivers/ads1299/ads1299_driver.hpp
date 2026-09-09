@@ -123,8 +123,27 @@ public:
     /** Sign-extend a 24-bit two's-complement value. */
     static int32_t decode24(const uint8_t *p);
 
-    /** DRDY semaphore — given by ISR, taken by acquisition thread. */
+    /**
+     * DRDY semaphore — given by the ISR on every falling edge, taken by the
+     * acquisition thread for immediate wake-up. Binary, so it can collapse
+     * pulses; the counters below exist to detect/measure exactly that.
+     */
     static struct k_sem drdy_sem;
+
+    /**
+     * DRDY pulses pending drain — incremented by the ISR alongside the
+     * semaphore give. The acquisition thread decrements it per frame read,
+     * so a non-zero backlog shows the thread is falling behind.
+     */
+    static atomic_t drdy_backlog;
+
+    /**
+     * Total DRDY pulses seen by the ISR since boot — the ground truth for
+     * how many conversions the ADC actually delivered. Compare the
+     * per-second delta against the frames actually read to bisect whether
+     * samples are lost at the interrupt level or the processing level.
+     */
+    static atomic_t drdy_isr_total;
 
 private:
     int  spiWriteBytes(const uint8_t *data, size_t len);
@@ -142,7 +161,7 @@ private:
     int  setupDrdyInterrupt();
     int  startAdsPwmClock();
 
-    /** DRDY falling-edge ISR — gives the drdy_sem semaphore. */
+    /** DRDY falling-edge ISR — increments the drdy_count pulse counter. */
     static void drdyIsr(const struct device *dev,
                         struct gpio_callback *cb,
                         uint32_t pins);

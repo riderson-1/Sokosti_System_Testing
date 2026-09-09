@@ -9,6 +9,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/sys/atomic.h>
 
 #include <stdint.h>
 
@@ -66,6 +67,17 @@ extern struct k_msgq imu_sd_queue;
 
 // Global flag: sampling/streaming is running (device is measuring)
 extern volatile bool measurement_active;
+
+/* ---------------------------------------------------------------------------
+ * IMU instrumentation counters — defined in threads.cpp, incremented in
+ * bhi360_driver.cpp at the point where FIFO samples are produced and where
+ * they are pushed into imu_queue / imu_sd_queue. threads.cpp cannot count
+ * these itself because imu_thread() only calls bhi360_process_fifo(), which
+ * owns the actual queue-push logic.
+---------------------------------------------------------------------------- */
+extern atomic_t imu_samples_collected;
+extern atomic_t imu_live_queue_drops;
+extern atomic_t imu_sd_queue_drops;
 
 // SD-card record toggle, driven by Button 1:
 // false = measuring only (streaming over BLE/USB, nothing written to SD)

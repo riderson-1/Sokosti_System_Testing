@@ -56,11 +56,31 @@ volatile bool sd_recording = false;
 static constexpr size_t BLE_EMG_GROUP_SAMPLES = 8;
 static constexpr size_t MAX_IMU_PACKETS_PER_WAKEUP = 4;
 
-/* Instrumentation: per-stream success/-ENOMEM counts */
+/* Instrumentation: per-stream success/-ENOMEM counts (transmission stage) */
 static atomic_t emg_send_ok      = ATOMIC_INIT(0);
 static atomic_t emg_send_enomem  = ATOMIC_INIT(0);
 static atomic_t imu_send_ok      = ATOMIC_INIT(0);
 static atomic_t imu_send_enomem  = ATOMIC_INIT(0);
+
+/* Instrumentation: acquisition stage (ground truth for what hardware
+ * actually produced) and queue-loss stage (dropped before ever reaching
+ * the transport). These are the counters that let you attribute loss to
+ * a specific stage of the pipeline rather than just seeing "fewer samples
+ * arrived on the PC than expected". */
+static atomic_t emg_samples_collected = ATOMIC_INIT(0); /* raw ADS1299 reads */
+static atomic_t emg_batches_produced  = ATOMIC_INIT(0); /* completed 8-sample batches */
+static atomic_t emg_live_queue_drops  = ATOMIC_INIT(0); /* batches purged from emg_queue (full) */
+static atomic_t emg_sd_queue_drops    = ATOMIC_INIT(0); /* batches dropped from emg_sd_queue (full) */
+
+/* IMU-side counters. These are declared here (and in threads.hpp) so that
+ * bhi360_driver.cpp — where imu_queue / imu_sd_queue are actually fed —
+ * can increment them at the point of production/drop. threads.cpp cannot
+ * count these itself: imu_thread() only calls bhi360_process_fifo(), which
+ * is opaque from here. See threads.hpp for the increment points to add in
+ * bhi360_driver.cpp. */
+atomic_t imu_samples_collected = ATOMIC_INIT(0);
+atomic_t imu_live_queue_drops  = ATOMIC_INIT(0);
+atomic_t imu_sd_queue_drops    = ATOMIC_INIT(0);
 
 /* ---------------------------------------------------------------------------
  * Thread stacks and control blocks
@@ -223,10 +243,15 @@ static void acquisition_thread(void *, void *, void *)
     size_t batch_count = 0;
 
     while (measurement_active) {
+        /* Block until the next DRDY pulse. The semaphore wakes us
+         * immediately (no polling latency); it is binary, so pulses that
+         * arrive while we are processing collapse into it — the backlog
+         * and isr_total counters expose exactly how many were lost. */
         ret = k_sem_take(&ADS1299::drdy_sem, K_MSEC(50));
         if (ret != 0 || !measurement_active) {
             continue;
         }
+        atomic_dec(&ADS1299::drdy_backlog);
 
         ret = ads.readFrameRdatac(frame);
         if (ret) {
@@ -249,17 +274,26 @@ static void acquisition_thread(void *, void *, void *)
 
         pkt.checksum = computeChecksum(pkt);
 
+        atomic_inc(&emg_samples_collected);
         batch_count++;
 
         if (batch_count == 8) {   // BATCH_SIZE
+            atomic_inc(&emg_batches_produced);
+
             /* SD copy: only while sd_recording is toggled on by Button 1.
              * Non-blocking; if the SD queue is ever full the batch is
              * dropped from SD only — never purge or block here. */
             if (sd_recording) {
-                (void)k_msgq_put(&emg_sd_queue, &batch, K_NO_WAIT);
+                if (k_msgq_put(&emg_sd_queue, &batch, K_NO_WAIT) != 0) {
+                    atomic_inc(&emg_sd_queue_drops);
+                }
             }
 
             if (k_msgq_put(&emg_queue, &batch, K_NO_WAIT) != 0) {
+                /* k_msgq_purge() discards every batch currently queued, not
+                 * just one — count them all so the stat reflects actual
+                 * batches lost, not just "a purge happened". */
+                atomic_add(&emg_live_queue_drops, k_msgq_num_used_get(&emg_queue));
                 k_msgq_purge(&emg_queue);
                 (void)k_msgq_put(&emg_queue, &batch, K_NO_WAIT);
             }
@@ -329,26 +363,58 @@ static void live_log(void *, void *, void *)
 {
     uint32_t emg_ok_prev = 0, emg_enomem_prev = 0;
     uint32_t imu_ok_prev = 0, imu_enomem_prev = 0;
+    uint32_t emg_collected_prev = 0, emg_live_drop_prev = 0, emg_sd_drop_prev = 0;
+    uint32_t imu_collected_prev = 0, imu_live_drop_prev = 0, imu_sd_drop_prev = 0;
+    uint32_t drdy_isr_prev = 0;
 
     while (true) {
-        k_sleep(K_MSEC(500));
-        int32_t ch1 = last_ch1_code;
-        LOG_INF("ch1 code = %d  (%.2f uV)", ch1,
-                (double)ch1 * 5.0 / 8.0 / 8388608.0 * 1e6);
+        k_sleep(K_MSEC(1000));
+        // int32_t ch1 = last_ch1_code;
+        // LOG_INF("ch1 code = %d  (%.2f uV)", ch1,
+        //         (double)ch1 * 5.0 / 8.0 / 8388608.0 * 1e6);
 
+        /* --- Transmission stage: what the transport layer accepted/rejected --- */
         uint32_t emg_ok = atomic_get(&emg_send_ok);
         uint32_t emg_enomem = atomic_get(&emg_send_enomem);
         uint32_t imu_ok = atomic_get(&imu_send_ok);
         uint32_t imu_enomem = atomic_get(&imu_send_enomem);
 
-        LOG_INF("BLE TX/500ms: EMG ok=%u enomem=%u | IMU ok=%u enomem=%u",
+        LOG_INF("BLE TX/s: EMG ok=%u enomem=%u | IMU ok=%u enomem=%u",
                 emg_ok - emg_ok_prev, emg_enomem - emg_enomem_prev,
                 imu_ok - imu_ok_prev, imu_enomem - imu_enomem_prev);
+
+        /* --- Acquisition stage: ground truth vs. queue loss, per stream --- */
+        uint32_t emg_collected = atomic_get(&emg_samples_collected);
+        uint32_t emg_live_drop = atomic_get(&emg_live_queue_drops);
+        uint32_t emg_sd_drop   = atomic_get(&emg_sd_queue_drops);
+        uint32_t imu_collected = atomic_get(&imu_samples_collected);
+        uint32_t imu_live_drop = atomic_get(&imu_live_queue_drops);
+        uint32_t imu_sd_drop   = atomic_get(&imu_sd_queue_drops);
+        uint32_t drdy_isr      = (uint32_t)atomic_get(&ADS1299::drdy_isr_total);
+
+        LOG_INF("EMG/s: collected=%u live_q_drop=%u sd_q_drop=%u | "
+                "drdy_isr=%u drdy_backlog=%lu",
+                emg_collected - emg_collected_prev,
+                emg_live_drop - emg_live_drop_prev,
+                emg_sd_drop - emg_sd_drop_prev,
+                drdy_isr - drdy_isr_prev,
+                static_cast<unsigned long>(atomic_get(&ADS1299::drdy_backlog)));
+        LOG_INF("IMU/s: collected=%u live_q_drop=%u sd_q_drop=%u",
+                imu_collected - imu_collected_prev,
+                imu_live_drop - imu_live_drop_prev,
+                imu_sd_drop - imu_sd_drop_prev);
 
         emg_ok_prev = emg_ok;
         emg_enomem_prev = emg_enomem;
         imu_ok_prev = imu_ok;
         imu_enomem_prev = imu_enomem;
+        emg_collected_prev = emg_collected;
+        emg_live_drop_prev = emg_live_drop;
+        emg_sd_drop_prev = emg_sd_drop;
+        drdy_isr_prev = drdy_isr;
+        imu_collected_prev = imu_collected;
+        imu_live_drop_prev = imu_live_drop;
+        imu_sd_drop_prev = imu_sd_drop;
     }
 }
 
