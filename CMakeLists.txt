@@ -17,6 +17,7 @@ target_sources(app PRIVATE
     app/src/ble/ble_nus.cpp
     app/src/usb/usb_cdc.cpp
     app/src/usb/sample_usbd_init.c
+    app/src/sd_log_backend.cpp
     drivers/ads1299/ads1299_driver.cpp
     drivers/ads1299/ads1299_configs.cpp
 )

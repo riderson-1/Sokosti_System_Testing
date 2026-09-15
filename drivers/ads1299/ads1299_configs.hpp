@@ -7,7 +7,8 @@ enum class AdsPreset {
     DefaultSettings,
     AllChannelsMeasurement,
     AllChannelsLowSpeed,
-    AllChannelsShorted   // all channels, MUXn = 001 (input shorted) for baseline/offset/noise measurement
+    AllChannelsShorted,  // all channels, MUXn = 001 (input shorted) for baseline/offset/noise measurement
+    AllChannelsTestSignal // all channels, MUXn = 101 (internal test signal), CONFIG2 = D0h
 };
 
 /**
