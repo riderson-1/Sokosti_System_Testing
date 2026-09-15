@@ -92,7 +92,6 @@ K_THREAD_STACK_DEFINE(led_stack, 4096);
 K_THREAD_STACK_DEFINE(log_stack, 4096);
 K_THREAD_STACK_DEFINE(imu_stack, 4096);
 K_THREAD_STACK_DEFINE(sd_stack, 8192); // Generous 8KB stack for safety
-K_THREAD_STACK_DEFINE(sd_log_stack, 4096);
 
 static struct k_thread acq_thread_data;
 static struct k_thread ble_thread_data;
@@ -100,7 +99,6 @@ static struct k_thread led_thread_data;
 static struct k_thread log_thread_data;
 static struct k_thread imu_thread_data;
 static struct k_thread sd_thread_data;
-static struct k_thread sd_log_thread_data;
 
 // ---------------------------------------------------------------------------
 // Static File System Allocations (Removes them completely from the stack!)
@@ -475,35 +473,6 @@ static void sd_writer_thread_entry(void *, void *, void *)
 
     LOG_INF("SD CARD: Ready. Press Button 1 to start a new recording session.");
 
-    /* ---- Open the always-on boot log file for the log backend ----
-     * The filename increments for every boot (boot_0001.log, boot_0002.log,
-     * ...). It stays open for the lifetime of the device and captures every
-     * log line, including those before any Button-1 press. */
-    {
-        char logpath[48];
-        int boot_idx = 1;
-        while (boot_idx < 1000) {
-            snprintf(logpath, sizeof(logpath), "/SD:/logs/boot_%04d.log", boot_idx);
-
-            ret = fs_open(&test_file, logpath, FS_O_READ);
-            if (ret == 0) {
-                fs_close(&test_file);
-                boot_idx++;
-            } else if (ret == -ENOENT) {
-                ret = sd_log_open(logpath);
-                if (ret == 0) {
-                    LOG_INF("SD LOG: Always-on boot log opened: %s", logpath);
-                } else {
-                    LOG_ERR("SD LOG: Failed to open boot log %s: %d", logpath, ret);
-                }
-                break;
-            } else {
-                LOG_ERR("SD LOG: stat on %s failed: %d", logpath, ret);
-                break;
-            }
-        }
-    }
-
     EmgSamplePacket emg_pkt;
     ImuSamplePacket imu_pkt;
     uint32_t write_counter = 0;
@@ -564,6 +533,20 @@ static void sd_writer_thread_entry(void *, void *, void *)
             continue;
         }
 
+        /* ---- Open the matching session .log file for the log backend ---- */
+        {
+            char logpath[48];
+            snprintf(logpath, sizeof(logpath), "/SD:/logs/session_%04d.log", file_idx);
+            ret = sd_log_open(logpath);
+            if (ret != 0) {
+                LOG_ERR("SD LOG: Failed to open session log %s: %d", logpath, ret);
+            } else {
+                /* Enable the backend only once a session file is open, so it
+                 * only captures lines while recording. */
+                sd_log_backend_enable();
+            }
+        }
+
         /* ---- Active session: drain queues while toggle stays on ---- */
         write_counter = 0;
         while (sd_recording) {
@@ -580,6 +563,11 @@ static void sd_writer_thread_entry(void *, void *, void *)
                 idle = false;
                 write_counter++;
             }
+
+            /* Drain the log backend queue into the session .log file. This
+             * runs in the same thread that owns the file, so there is no
+             * concurrent access / race on the file handle. */
+            sd_log_drain();
 
             if (write_counter >= 50) {
                 fs_sync(&log_file);
@@ -613,27 +601,9 @@ static void sd_writer_thread_entry(void *, void *, void *)
         } else {
             LOG_ERR("SD CARD ERROR: Error closing file: %d", ret);
         }
-    }
-}
 
-/* ---------------------------------------------------------------------------
- * SD Log Writer Thread
- *
- * Drains the sd_log_queue (fed by the custom log backend) into the always-on
- * boot log file. Runs independently of the binary SD writer so that log lines
- * are written continuously, regardless of whether a binary session is active.
- * Periodically syncs so a power cut loses at most the last few seconds.
- * ------------------------------------------------------------------------- */
-static void sd_log_writer_thread(void *, void *, void *)
-{
-    uint32_t ticks = 0;
-    while (true) {
-        sd_log_drain();
-        if (++ticks >= 50) {          /* ~1 s at 20 ms period */
-            sd_log_sync();
-            ticks = 0;
-        }
-        k_sleep(K_MSEC(20));
+        /* ---- Close the matching session .log file ---- */
+        sd_log_close();
     }
 }
 
@@ -719,21 +689,4 @@ void threads_setup(void)
         0,
         K_NO_WAIT
     );
-
-    // Start SD log writer thread (drains the log backend queue to the SD card)
-    k_thread_create(
-        &sd_log_thread_data,
-        sd_log_stack,
-        K_THREAD_STACK_SIZEOF(sd_log_stack),
-        sd_log_writer_thread,
-        NULL, NULL, NULL,
-        6,
-        0,
-        K_NO_WAIT
-    );
-
-    // Activate the SD log backend so it starts capturing log lines.
-    // (The backend is autostart=false; enabling it here means no lines are
-    //  captured before the SD card is mounted.)
-    sd_log_backend_enable();
 }

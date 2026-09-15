@@ -26,6 +26,7 @@
 #include <zephyr/logging/log_core.h>
 #include <zephyr/logging/log_output.h>
 #include <zephyr/logging/log_backend_std.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/fs/fs.h>
 #include <zephyr/sys/atomic.h>
@@ -41,7 +42,7 @@ LOG_MODULE_REGISTER(sd_log, LOG_LEVEL_DBG);
 K_MSGQ_DEFINE(sd_log_queue, sizeof(SdLogLine), SD_LOG_QUEUE_SIZE, 4);
 
 /* Instrumentation: lines dropped because the queue was full. */
-static atomic_t sd_log_dropped = ATOMIC_INIT(0);
+static atomic_t sd_log_drop_cnt = ATOMIC_INIT(0);
 
 /* ---------------------------------------------------------------------------
  * Session log file state (owned by the SD writer thread).
@@ -67,7 +68,7 @@ static void sd_log_enqueue_line(void)
     line.len = (uint16_t)n;
 
     if (k_msgq_put(&sd_log_queue, &line, K_NO_WAIT) != 0) {
-        atomic_inc(&sd_log_dropped);
+        atomic_inc(&sd_log_drop_cnt);
     }
 }
 
@@ -114,7 +115,10 @@ LOG_OUTPUT_DEFINE(sd_log_output, sd_log_char_out, sd_log_buf, sizeof(sd_log_buf)
 static void sd_log_process(const struct log_backend *const backend,
                            union log_msg_generic *msg)
 {
-    uint32_t flags = log_backend_std_get_flags();
+    /* Use the same formatting as the standard RTT/UART backend, but strip the
+     * ANSI color codes — they render fine on a terminal but show up as garbage
+     * (e.g. "[0m") in a plain-text log file on the SD card. */
+    uint32_t flags = log_backend_std_get_flags() & ~LOG_OUTPUT_FLAG_COLORS;
     log_format_func_t fmt = log_format_func_t_get(LOG_OUTPUT_TEXT);
 
     fmt(&sd_log_output, &msg->log, flags);
