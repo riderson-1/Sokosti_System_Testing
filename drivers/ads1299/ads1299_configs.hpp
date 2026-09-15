@@ -6,7 +6,8 @@ enum class AdsPreset {
     SingleChannelTest,   // only uses single channel at 1000 sps, gain 8
     DefaultSettings,
     AllChannelsMeasurement,
-    AllChannelsLowSpeed
+    AllChannelsLowSpeed,
+    AllChannelsShorted   // all channels, MUXn = 001 (input shorted) for baseline/offset/noise measurement
 };
 
 /**

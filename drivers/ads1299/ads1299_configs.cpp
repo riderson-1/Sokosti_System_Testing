@@ -86,6 +86,31 @@ static ADS1299Settings AllChannelsLowSpeed()
     return cfg;
 }
 
+static ADS1299Settings AllChannelsShorted()
+{
+    ADS1299Settings cfg;
+
+    for (size_t i = 0; i < ADS_NUM_CHANNELS; i++)
+    {
+        cfg.channel[i].powerDown = 0;   // PDn = 0: channel powered up
+        cfg.channel[i].gain = 1;        // keep gain 1 for baseline characterization
+        cfg.channel[i].mux = 1;         // MUXn[2:0] = 001: input shorted (internal, bypasses pins)
+        cfg.channel[i].srb2 = 0;
+    }
+
+    cfg.device.nDaisyChain = 0;
+    cfg.device.clkEn = 0;
+
+    cfg.device.samplingRate = 1000;
+    cfg.device.nPdBias = 1;
+    cfg.device.nPdRefBuf = 1;
+    cfg.device.biasRefInt = 1;
+
+    cfg.device.intCal = 0;
+
+    return cfg;
+}
+
 ADS1299Settings makeAdsSettings(AdsPreset preset)
 {
     switch (preset) {
@@ -93,6 +118,7 @@ ADS1299Settings makeAdsSettings(AdsPreset preset)
         case AdsPreset::SingleChannelTest:      return SingleChannelTest();
         case AdsPreset::AllChannelsMeasurement: return AllChannelsMeasurement();
         case AdsPreset::AllChannelsLowSpeed:    return AllChannelsLowSpeed();
+        case AdsPreset::AllChannelsShorted:     return AllChannelsShorted();
     }
     return DefaultSettings();  // unreachable, keeps compiler happy without -Wswitch complaints masking a real bug
 }
