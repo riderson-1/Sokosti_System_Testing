@@ -423,6 +423,7 @@ int32_t ADS1299::decode24(const uint8_t *p)
 
 atomic_t ADS1299::drdy_backlog = ATOMIC_INIT(0);
 atomic_t ADS1299::drdy_isr_total = ATOMIC_INIT(0);
+uint32_t ADS1299::last_drdy_period_ms = 0;
 struct k_sem ADS1299::drdy_sem;
 struct gpio_callback ADS1299::drdy_cb_data_;
 
@@ -544,6 +545,16 @@ void ADS1299::drdyIsr(const struct device *dev,
                       struct gpio_callback *cb,
                       uint32_t pins)
 {
+    /* Measure the DRDY period (ms) for jitter analysis. This runs in ISR
+     * context, so it must stay cheap and non-blocking — we only record the
+     * period here and let the acquisition thread do the actual LOG_INF. */
+    static uint32_t last_drdy_time_emg = 0;
+    uint32_t now = k_uptime_get();
+    if (last_drdy_time_emg > 0) {
+        last_drdy_period_ms = now - last_drdy_time_emg;
+    }
+    last_drdy_time_emg = now;
+
     /* Account for every pulse: isr_total is the ground truth for how many
      * conversions the ADC delivered; backlog shows how many are still
      * waiting to be read. The semaphore wakes the acquisition thread

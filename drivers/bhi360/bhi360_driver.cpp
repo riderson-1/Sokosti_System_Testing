@@ -15,6 +15,8 @@
  #include "firmware/bhi360/BHI360_Aux_BMM150.fw.h"
  }
 
+#include <math.h>
+
 static const char *get_api_error(int8_t error_code)
 {
     switch (error_code) {
@@ -396,6 +398,43 @@ static bool test_bhi360_spi(void)
  void bhi360_process_fifo(void)
  {
 	 static uint8_t work_buffer[WORK_BUFFER_SIZE];
+	 /* Per-second DRDY period statistics (jitter analysis). process_fifo runs
+	  * in the IMU thread (~10 ms poll), so accumulation here is thread-safe
+	  * and the summary line is captured by the SD log backend. */
+	 static uint32_t last_drdy_time_imu = 0;
+	 static uint32_t imu_period_count = 0;
+	 static uint64_t imu_period_sum = 0;
+	 static uint64_t imu_period_sqsum = 0;
+	 static uint32_t imu_period_min = UINT32_MAX;
+	 static uint32_t imu_period_max = 0;
+	 static uint32_t imu_stats_last_t = 0;
+
+	 uint32_t now = k_uptime_get();
+	 if (last_drdy_time_imu > 0) {
+		 uint32_t p = now - last_drdy_time_imu;
+		 imu_period_count++;
+		 imu_period_sum += p;
+		 imu_period_sqsum += (uint64_t)p * p;
+		 if (p < imu_period_min) imu_period_min = p;
+		 if (p > imu_period_max) imu_period_max = p;
+	 }
+	 last_drdy_time_imu = now;
+
+	 /* Emit one summary line per second (mean/min/max/stddev). */
+	 if (imu_period_count > 0 && (now - imu_stats_last_t) >= 1000) {
+		 double mean = (double)imu_period_sum / imu_period_count;
+		 double var = ((double)imu_period_sqsum / imu_period_count) - (mean * mean);
+		 if (var < 0.0) var = 0.0;
+		 LOG_INF("IMU_DRDY: n=%u mean=%.2f min=%u max=%u std=%.2f ms",
+				 imu_period_count, mean, imu_period_min, imu_period_max, sqrt(var));
+		 imu_period_count = 0;
+		 imu_period_sum = 0;
+		 imu_period_sqsum = 0;
+		 imu_period_min = UINT32_MAX;
+		 imu_period_max = 0;
+		 imu_stats_last_t = now;
+	 }
+
 	 for (size_t i = 0; i < NUM_IMUS; ++i) {
 		 if (imu_devices[i].initialized) {
 			 int8_t rslt = bhy2_get_and_process_fifo(work_buffer, sizeof(work_buffer), &imu_devices[i].bhy2);

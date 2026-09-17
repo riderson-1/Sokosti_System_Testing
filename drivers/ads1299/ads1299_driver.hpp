@@ -145,6 +145,17 @@ public:
      */
     static atomic_t drdy_isr_total;
 
+    /**
+     * Most recent DRDY period measured by the ISR, in milliseconds.
+     * Written by drdyIsr (ISR context), read by the acquisition thread for
+     * jitter logging. A uint32_t read/write is atomic on this platform, so
+     * no lock is needed between the ISR writer and thread reader.
+     */
+    static uint32_t last_drdy_period_ms;
+
+    /** Get the most recent DRDY period measured by the ISR (ms). */
+    static uint32_t getLastDrdyPeriodMs(void) { return last_drdy_period_ms; }
+
 private:
     int  spiWriteBytes(const uint8_t *data, size_t len);
     int  spiTransceiveBytes(const uint8_t *tx_data, uint8_t *rx_data, size_t len);

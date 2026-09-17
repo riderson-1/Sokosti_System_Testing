@@ -243,6 +243,16 @@ static void acquisition_thread(void *, void *, void *)
     EmgSamplePacket batch;
     size_t batch_count = 0;
 
+    /* Per-second DRDY period statistics (jitter analysis). Accumulated in
+     * thread context and emitted as ONE summary line per second, so the
+     * RTT/SD log is not flooded at ~1000 SPS. */
+    uint32_t emg_period_count = 0;
+    uint64_t emg_period_sum = 0;
+    uint64_t emg_period_sqsum = 0;
+    uint32_t emg_period_min = UINT32_MAX;
+    uint32_t emg_period_max = 0;
+    uint32_t emg_stats_last_t = k_uptime_get();
+
     while (measurement_active) {
         /* Block until the next DRDY pulse. The semaphore wakes us
          * immediately (no polling latency); it is binary, so pulses that
@@ -253,6 +263,32 @@ static void acquisition_thread(void *, void *, void *)
             continue;
         }
         atomic_dec(&ADS1299::drdy_backlog);
+
+        /* Accumulate the DRDY period measured by the ISR. */
+        {
+            uint32_t p = ADS1299::getLastDrdyPeriodMs();
+            emg_period_count++;
+            emg_period_sum += p;
+            emg_period_sqsum += (uint64_t)p * p;
+            if (p < emg_period_min) emg_period_min = p;
+            if (p > emg_period_max) emg_period_max = p;
+        }
+
+        /* Emit one summary line per second (mean/min/max/stddev). */
+        uint32_t now = k_uptime_get();
+        if (emg_period_count > 0 && (now - emg_stats_last_t) >= 1000) {
+            double mean = (double)emg_period_sum / emg_period_count;
+            double var = ((double)emg_period_sqsum / emg_period_count) - (mean * mean);
+            if (var < 0.0) var = 0.0;
+            LOG_INF("EMG_DRDY: n=%u mean=%.2f min=%u max=%u std=%.2f ms",
+                    emg_period_count, mean, emg_period_min, emg_period_max, sqrt(var));
+            emg_period_count = 0;
+            emg_period_sum = 0;
+            emg_period_sqsum = 0;
+            emg_period_min = UINT32_MAX;
+            emg_period_max = 0;
+            emg_stats_last_t = now;
+        }
 
         ret = ads.readFrameRdatac(frame);
         if (ret) {
